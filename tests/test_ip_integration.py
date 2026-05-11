@@ -15,15 +15,7 @@ from slip.slang_integration import reflect_module, ModuleInfo
 from slip.codegen import CodeGenerator
 from slip.errors.semantic import SlipSemanticError
 
-FIXTURES = Path(__file__).parent / "fixtures"
-IP_DIR = FIXTURES / "ip"
-
-
-def compile_with_ip(slip_path: Path, ip_dirs: list[Path]) -> dict[str, str]:
-    tokens = Lexer(slip_path.read_text(), str(slip_path)).tokenize()
-    modules = Parser(tokens, str(slip_path)).parse()
-    ir = SemanticAnalyzer().analyze(modules, ip_dirs)
-    return CodeGenerator().generate(ir)
+from conftest import FIXTURES, IP_DIR, compile_from_path as compile_with_ip
 
 
 # ════════════════════════════════════════════════════════════════

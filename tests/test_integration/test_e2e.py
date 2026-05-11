@@ -2,8 +2,7 @@ import pytest
 from pathlib import Path
 from slip.cli._pipeline import run_build, run_check
 
-
-FIXTURES = Path(__file__).parent.parent / "fixtures"
+from conftest import FIXTURES
 
 
 class TestFixtureFiles:

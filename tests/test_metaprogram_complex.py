@@ -20,25 +20,7 @@ from slip.semantic import SemanticAnalyzer
 from slip.codegen import CodeGenerator
 from slip.errors.semantic import SlipSemanticError
 
-FIXTURES = Path(__file__).parent / "fixtures"
-
-
-def parse_module(source: str):
-    tokens = Lexer(source, "test.slip").tokenize()
-    modules = Parser(tokens, "test.slip").parse()
-    return modules[0]
-
-
-def parse_modules(source: str):
-    tokens = Lexer(source, "test.slip").tokenize()
-    return Parser(tokens, "test.slip").parse()
-
-
-def compile_source(source: str) -> dict[str, str]:
-    tokens = Lexer(source, "test.slip").tokenize()
-    modules = Parser(tokens, "test.slip").parse()
-    ir = SemanticAnalyzer().analyze(modules)
-    return CodeGenerator().generate(ir)
+from conftest import FIXTURES, compile_source, parse_module, parse_source as parse_modules, validate_sv
 
 
 # ════════════════════════════════════════════════════════════════

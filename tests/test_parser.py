@@ -3,10 +3,7 @@ from slip.lexer import Lexer
 from slip.parser import Parser
 from slip.ast import *
 
-
-def parse(source: str):
-    tokens = Lexer(source, "test.slip").tokenize()
-    return Parser(tokens, "test.slip").parse()
+from conftest import parse_source as parse
 
 
 class TestModuleParsing:

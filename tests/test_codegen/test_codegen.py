@@ -5,12 +5,7 @@ from slip.semantic import SemanticAnalyzer
 from slip.codegen import CodeGenerator
 from slip.ir import HDLModule
 
-
-def compile_source(source: str) -> dict[str, str]:
-    tokens = Lexer(source, "test.slip").tokenize()
-    modules = Parser(tokens, "test.slip").parse()
-    ir_modules = SemanticAnalyzer().analyze(modules)
-    return CodeGenerator().generate(ir_modules)
+from conftest import compile_source
 
 
 class TestCodeGeneration:

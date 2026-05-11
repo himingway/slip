@@ -7,28 +7,15 @@ from slip.lexer import Lexer, TokenType
 from slip.parser import Parser
 from slip.ast.instance import InstanceStmt, Connection
 from slip.semantic import SemanticAnalyzer
-from slip.semantic.instance_resolve import resolve_instances
 from slip.ir import HDLModule, HDLInstance, HDLPort, HDLSignal, HDLType
 from slip.codegen import CodeGenerator
 from slip.errors.semantic import SlipSemanticError
 
-FIXTURES = Path(__file__).parent / "fixtures"
+from conftest import FIXTURES, compile_source, parse_source as parse_modules
 
 # Slip source strings with regex backreferences use raw strings to preserve \1
 _REGEX_CHILD = r'module child (clk, data_in, data_out) { logic clk; logic [7:0] data_in; logic [7:0] data_out; assign data_out = data_in; }'
 _REGEX_PARENT = r'module parent (clk, fifo_in, fifo_out) { logic clk; logic [7:0] fifo_in; logic [7:0] fifo_out; child u1 { .clk, "data_(.*)" => "fifo_\1" }; }'
-
-
-def parse_modules(source: str):
-    tokens = Lexer(source, "test.slip").tokenize()
-    return Parser(tokens, "test.slip").parse()
-
-
-def compile_source(source: str) -> dict[str, str]:
-    tokens = Lexer(source, "test.slip").tokenize()
-    modules = Parser(tokens, "test.slip").parse()
-    ir = SemanticAnalyzer().analyze(modules)
-    return CodeGenerator().generate(ir)
 
 
 # ────────────────────────────────────────────────────────────────

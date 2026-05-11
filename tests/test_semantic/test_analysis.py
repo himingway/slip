@@ -1,7 +1,7 @@
 import pytest
 from slip.lexer import Lexer
 from slip.parser import Parser
-from slip.semantic.analyzer import SemanticAnalyzer
+from slip.semantic import SemanticAnalyzer
 from slip.semantic.symbol_collector import collect
 from slip.semantic.driver_analysis import analyze, infer_port_directions
 from slip.semantic.seq_correction import correct
@@ -9,11 +9,7 @@ from slip.semantic.expr_serializer import expr_to_sv
 from slip.ast.expressions import BinaryExpr, IdentExpr, IntLiteralExpr, UnaryExpr
 from slip.ir import HDLModule
 
-
-def parse_module(source: str):
-    tokens = Lexer(source, "test.slip").tokenize()
-    modules = Parser(tokens, "test.slip").parse()
-    return modules[0]
+from conftest import parse_module
 
 
 class TestSymbolCollector:

@@ -3,7 +3,7 @@
 import pytest
 from pathlib import Path
 
-from slip.lexer import Lexer
+from slip.lexer import Lexer, TokenType
 from slip.parser import Parser
 from slip.semantic import SemanticAnalyzer
 from slip.semantic.gen_expand import expand_module
@@ -12,17 +12,8 @@ from slip.semantic.expr_serializer import expr_to_sv
 from slip.slang_integration import reflect_module
 from slip.codegen import CodeGenerator
 from slip.errors.semantic import SlipSemanticError
-from slip.lexer.token import TokenType
 
-FIXTURES = Path(__file__).parent / "fixtures"
-IP_DIR = FIXTURES / "ip"
-
-
-def _compile(source: str, ip_dirs: list[Path] | None = None) -> dict[str, str]:
-    tokens = Lexer(source, "test.slip").tokenize()
-    modules = Parser(tokens, "test.slip").parse()
-    ir = SemanticAnalyzer().analyze(modules, ip_dirs or [])
-    return CodeGenerator().generate(ir)
+from conftest import FIXTURES, IP_DIR, compile_source as _compile
 
 
 # ════════════════════════════════════════════════════════════════

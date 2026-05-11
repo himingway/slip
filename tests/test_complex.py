@@ -17,19 +17,7 @@ from slip.codegen import CodeGenerator
 from slip.errors.syntax import SlipSyntaxError
 from slip.errors.semantic import SlipSemanticError
 
-FIXTURES = Path(__file__).parent / "fixtures"
-
-
-def compile_source(source: str) -> dict[str, str]:
-    tokens = Lexer(source, "test.slip").tokenize()
-    modules = Parser(tokens, "test.slip").parse()
-    ir = SemanticAnalyzer().analyze(modules)
-    return CodeGenerator().generate(ir)
-
-
-def parse_source(source: str):
-    tokens = Lexer(source, "test.slip").tokenize()
-    return Parser(tokens, "test.slip").parse()
+from conftest import FIXTURES, compile_source, parse_source, validate_sv
 
 
 # ────────────────────────────────────────────────────────────────
