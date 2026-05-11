@@ -1,0 +1,24 @@
+module submod (clk, rst_n, data_in, data_out) {
+    logic clk;
+    logic rst_n;
+    logic [7:0] data_in;
+    logic [7:0] data_out;
+    seq (clk, neg: rst_n) {
+        if (!rst_n) { data_out = 0; } else { data_out = data_in; }
+    }
+}
+
+module top #(param W = 8) (clk, rst_n, din, dout) {
+    logic clk;
+    logic rst_n;
+    logic [W-1:0] din;
+    logic [W-1:0] dout;
+    logic [W-1:0] submod_in;
+    logic [W-1:0] submod_out;
+
+    submod u_sub {
+        .clk,
+        .rst_n,
+        "data_(.*)" => "submod_\1"
+    };
+}

@@ -1,0 +1,6 @@
+module simple (a, b, y) {
+    logic [7:0] a;
+    logic [7:0] b;
+    logic [7:0] y;
+    assign y = a & b;
+}

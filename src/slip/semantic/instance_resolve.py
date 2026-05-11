@@ -1,0 +1,176 @@
+from __future__ import annotations
+
+import re
+import warnings
+from pathlib import Path
+
+from slip.errors.semantic import SlipSemanticError
+from slip.ir import HDLInstance, HDLModule, HDLSignal, HDLType
+
+
+def resolve_instances(
+    ir_modules: list[HDLModule],
+    ip_dirs: list[Path],
+) -> list[HDLModule]:
+    """Resolve regex port mappings for all instances across all modules."""
+    module_index: dict[str, HDLModule] = {m.name: m for m in ir_modules}
+    results: list[HDLModule] = []
+    for mod in ir_modules:
+        results.append(_resolve_module(mod, module_index, ip_dirs))
+    return results
+
+
+def _resolve_module(
+    mod: HDLModule,
+    module_index: dict[str, HDLModule],
+    ip_dirs: list[Path],
+) -> HDLModule:
+    new_signals = list(mod.signals)
+    new_instances: list[HDLInstance] = []
+
+    for inst in mod.instances:
+        # Check localparam override
+        if inst.param_map:
+            lp_names = _get_target_localparams(inst.target, module_index, ip_dirs)
+            for pname, _ in inst.param_map:
+                if pname in lp_names:
+                    raise SlipSemanticError(
+                        "<instance>", 0, 0,
+                        f"cannot override localparam '{pname}'"
+                    )
+
+        if not inst.regex_rules:
+            new_instances.append(inst)
+            continue
+        expanded_inst, extra_signals = _expand_regex_connections(
+            inst, mod, module_index, ip_dirs, new_signals
+        )
+        new_instances.append(expanded_inst)
+        new_signals.extend(extra_signals)
+
+    return HDLModule(
+        name=mod.name,
+        params=mod.params,
+        localparams=mod.localparams,
+        ports=mod.ports,
+        signals=tuple(new_signals),
+        assigns=mod.assigns,
+        logic_blocks=mod.logic_blocks,
+        instances=tuple(new_instances),
+    )
+
+
+def _get_target_ports(
+    target_name: str,
+    module_index: dict[str, HDLModule],
+    ip_dirs: list[Path],
+) -> list[tuple[str, str, str | None]]:
+    """Get target module ports as (name, direction, width_sv) tuples."""
+    if target_name in module_index:
+        target = module_index[target_name]
+        return [
+            (p.name, p.direction, p.type_.width_sv if p.type_ else None)
+            for p in target.ports
+        ]
+
+    for ip_dir in ip_dirs:
+        for sv_file in ip_dir.glob("*.sv"):
+            try:
+                from slip.slang_integration import reflect_module
+                info = reflect_module(sv_file, target_name)
+                return [(p.name, p.direction, p.width) for p in info.ports]
+            except Exception:
+                continue
+        for v_file in ip_dir.glob("*.v"):
+            try:
+                from slip.slang_integration import reflect_module
+                info = reflect_module(v_file, target_name)
+                return [(p.name, p.direction, p.width) for p in info.ports]
+            except Exception:
+                continue
+
+    raise SlipSemanticError(
+        "<instance>", 0, 0,
+        f"cannot resolve target module '{target_name}'"
+    )
+
+
+def _get_target_localparams(
+    target_name: str,
+    module_index: dict[str, HDLModule],
+    ip_dirs: list[Path],
+) -> set[str]:
+    """Get the set of localparam names for a target module."""
+    if target_name in module_index:
+        return {lp.name for lp in module_index[target_name].localparams}
+    for ip_dir in ip_dirs:
+        for sv_file in list(ip_dir.glob("*.sv")) + list(ip_dir.glob("*.v")):
+            try:
+                from slip.slang_integration import reflect_module
+                info = reflect_module(sv_file, target_name)
+                return {p.name for p in info.params if p.is_local}
+            except Exception:
+                continue
+    return set()
+
+
+def _expand_regex_connections(
+    inst: HDLInstance,
+    parent_mod: HDLModule,
+    module_index: dict[str, HDLModule],
+    ip_dirs: list[Path],
+    existing_signals: list[HDLSignal],
+) -> tuple[HDLInstance, list[HDLSignal]]:
+    """Expand regex port connections for a single instance."""
+    target_ports = _get_target_ports(inst.target, module_index, ip_dirs)
+
+    port_map = dict(inst.port_map)
+
+    signal_names_in_scope = (
+        {p.name for p in parent_mod.ports}
+        | {s.name for s in parent_mod.signals}
+        | {p.name for p in parent_mod.params}
+        | {s.name for s in existing_signals}
+    )
+
+    implicit_signals: list[HDLSignal] = []
+
+    for port_name, direction, width_sv in target_ports:
+        if port_name in port_map:
+            if port_map[port_name] == "_":
+                continue  # intentionally dangling
+            continue
+
+        matched = False
+        for port_regex, signal_regex in inst.regex_rules:
+            if re.fullmatch(port_regex, port_name):
+                candidate = re.sub(port_regex, signal_regex, port_name)
+                if candidate in signal_names_in_scope:
+                    port_map[port_name] = candidate
+                    matched = True
+                    break
+                implicit_signals.append(HDLSignal(candidate, HDLType(width_sv=width_sv)))
+                signal_names_in_scope.add(candidate)
+                port_map[port_name] = candidate
+                matched = True
+                break
+
+        if not matched:
+            if direction == "output":
+                warnings.warn(
+                    f"unconnected output port '{port_name}' in instance '{inst.inst_name}'"
+                )
+            else:
+                raise SlipSemanticError(
+                    "<instance>", 0, 0,
+                    f"unconnected input port '{port_name}' in instance '{inst.inst_name}'"
+                )
+
+    updated_inst = HDLInstance(
+        inst_name=inst.inst_name,
+        target=inst.target,
+        param_map=inst.param_map,
+        port_map=tuple(port_map.items()),
+        regex_rules=(),
+    )
+    return updated_inst, implicit_signals

@@ -1,0 +1,10 @@
+module counter (clk, rst_n, count) {
+    logic [7:0] count;
+    seq (clk, neg: rst_n) {
+        if (!rst_n) {
+            count = 0;
+        } else {
+            count = count + 1;
+        }
+    }
+}

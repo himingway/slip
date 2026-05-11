@@ -1,0 +1,12 @@
+// Top-level: instantiates external prim_sync_reset and uses its output
+module reset_wrap (clk, rst_n_async, rst_n_out) {
+    logic clk;
+    logic rst_n_async;
+    logic rst_n_out;
+
+    prim_sync_reset u_rst_sync {
+        .clk,
+        .rst_n_async,
+        "rst_n_(.+)" => "rst_n_\1"
+    };
+}

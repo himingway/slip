@@ -1,0 +1,3 @@
+module adder #(param W = 8) (a, b, sum) {
+    assign sum = a + b;
+}

@@ -1,0 +1,14 @@
+// Top-level: instantiates external prim_obuf for tri-state bus
+// Uses same-name connection and regex for the rest
+module bus_wrap #(param W = 8) (clk, oe, din, dout) {
+    logic clk;
+    logic oe;
+    logic [W-1:0] din;
+    logic [W-1:0] dout;
+
+    prim_obuf #(.Width(W)) u_buf {
+        .oe,
+        .din,
+        .dout(dout)
+    };
+}

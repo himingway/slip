@@ -1,0 +1,16 @@
+// Top-level: instantiates external defined_ip (uses `define macros for widths)
+module define_user (clk, addr, data_in, data_out, valid) {
+    logic clk;
+    logic [7:0] addr;
+    logic [31:0] data_in;
+    logic [31:0] data_out;
+    logic valid;
+
+    defined_ip u_def {
+        .clk,
+        .addr,
+        .rdata(data_out),
+        .valid,
+        "w(.+)" => "my_\1"
+    };
+}

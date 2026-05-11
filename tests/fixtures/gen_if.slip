@@ -1,0 +1,10 @@
+module gen_if_test #(param USE_COMB = 1) (a, y) {
+    logic [7:0] a;
+    logic [7:0] y;
+    `if (USE_COMB) {
+        comb { y = a; }
+    }
+    `else {
+        seq (clk) { y = a; }
+    }
+}

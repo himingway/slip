@@ -1,0 +1,9 @@
+module mux (sel, a, b, y) {
+    logic [7:0] a;
+    logic [7:0] b;
+    logic [7:0] y;
+    comb {
+        if (sel) y = a;
+        else     y = b;
+    }
+}

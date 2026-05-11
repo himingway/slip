@@ -1,0 +1,35 @@
+// Multi-instance regex: shared bus infrastructure
+module bus_slave #(param AW = 8, param DW = 32) (clk, rst_n, bus_req, bus_addr, bus_wdata, bus_resp) {
+    logic clk;
+    logic rst_n;
+    logic bus_req;
+    logic [AW-1:0] bus_addr;
+    logic [DW-1:0] bus_wdata;
+    logic [DW-1:0] bus_resp;
+    seq (clk, neg: rst_n) {
+        if (!rst_n) { bus_resp = 0; } else { bus_resp = bus_wdata; }
+    }
+}
+
+module bus_top #(param N = 2, param AW = 8, param DW = 32) (clk, rst_n) {
+    logic clk;
+    logic rst_n;
+    logic s0_bus_req;
+    logic [AW-1:0] s0_bus_addr;
+    logic [DW-1:0] s0_bus_wdata;
+    logic [DW-1:0] s0_bus_resp;
+    logic s1_bus_req;
+    logic [AW-1:0] s1_bus_addr;
+    logic [DW-1:0] s1_bus_wdata;
+    logic [DW-1:0] s1_bus_resp;
+
+    bus_slave #(.AW(AW), .DW(DW)) s0 {
+        .clk, .rst_n,
+        "bus_(.*)" => "s0_bus_\1"
+    };
+
+    bus_slave #(.AW(AW), .DW(DW)) s1 {
+        .clk, .rst_n,
+        "bus_(.*)" => "s1_bus_\1"
+    };
+}

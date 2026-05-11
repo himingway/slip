@@ -1,0 +1,35 @@
+module fifo #(param DW = 32, param DEPTH = 16, param AW = 4) (clk, rst_n, din, wr_en, dout, rd_en, full, empty) {
+    logic [DW-1:0] din;
+    logic wr_en;
+    logic [DW-1:0] dout;
+    logic rd_en;
+    logic full;
+    logic empty;
+
+    logic [DW-1:0] mem [0:DEPTH-1];
+    logic [AW:0] wr_ptr;
+    logic [AW:0] rd_ptr;
+    logic [AW:0] cnt;
+
+    assign full = (cnt == DEPTH);
+    assign empty = (cnt == 0);
+    assign dout = mem[rd_ptr];
+
+    seq (clk, neg: rst_n) {
+        if (!rst_n) {
+            wr_ptr = 0;
+            rd_ptr = 0;
+            cnt = 0;
+        } else {
+            if (wr_en & ~full) {
+                mem[wr_ptr] = din;
+                wr_ptr = wr_ptr + 1;
+                cnt = cnt + 1;
+            }
+            if (rd_en & ~empty) {
+                rd_ptr = rd_ptr + 1;
+                cnt = cnt - 1;
+            }
+        }
+    }
+}

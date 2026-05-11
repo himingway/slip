@@ -1,0 +1,41 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from slip.codegen import CodeGenerator
+from slip.lexer import Lexer
+from slip.parser import Parser
+from slip.semantic import SemanticAnalyzer
+
+
+def run_build(source: Path, out_dir: Path, ip_dirs: list[Path]) -> dict[str, str]:
+    """Full compilation pipeline: source -> SV files."""
+    text = source.read_text()
+    filename = str(source)
+
+    # Lex
+    tokens = Lexer(text, filename).tokenize()
+
+    # Parse
+    modules = Parser(tokens, filename).parse()
+
+    # Semantic analysis
+    ir_modules = SemanticAnalyzer().analyze(modules, ip_dirs)
+
+    # Generate
+    return CodeGenerator().generate(ir_modules, output_dir=out_dir)
+
+
+def run_check(source: Path, ip_dirs: list[Path]) -> None:
+    """Check pipeline: source -> semantic analysis, no output."""
+    text = source.read_text()
+    filename = str(source)
+
+    # Lex
+    tokens = Lexer(text, filename).tokenize()
+
+    # Parse
+    modules = Parser(tokens, filename).parse()
+
+    # Semantic analysis (validates IR construction)
+    SemanticAnalyzer().analyze(modules, ip_dirs)

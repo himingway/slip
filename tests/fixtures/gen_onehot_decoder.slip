@@ -1,0 +1,11 @@
+// One-hot decoder: N input bits → 2^N one-hot outputs
+// Uses `for to generate the assign chain
+module onehot_decoder #(param N = 2) (sel, onehot) {
+    logic [N-1:0] sel;
+    logic [15:0] onehot;
+    `for (`i = 0; `i < 16; `i = `i + 1) {
+        `if (1) {
+            assign onehot = 0;
+        }
+    }
+}
