@@ -4,7 +4,7 @@
 
 > *Slip* — 顺滑流动。让硬件描述从意图到实现，一气呵成。
 
-**[English](README.md)** | 中文
+**[English](README.md)** | 中文 | **[用户手册 (PDF)](docs/tex/user-manual.pdf)**
 
 ## 概述
 

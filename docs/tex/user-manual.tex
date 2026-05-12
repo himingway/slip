@@ -205,60 +205,6 @@ endmodule
 \end{itemize}
 
 % ──────────────────────────────────────────────────────────────────
-\chapter{Include Directive}
-% ──────────────────────────────────────────────────────────────────
-
-The \code{include} directive imports \code{defun} function definitions and module declarations from another \code{.slip} file. It must appear at the top level, outside module bodies.
-
-\section{Basic Usage}
-
-\begin{lstlisting}[language=Slip]
-include "helpers.slip";
-include "utils/common.slip";
-\end{lstlisting}
-
-Included files are lexed, parsed, and their contents merged into the compilation unit. Relative paths are resolved from the directory of the including file.
-
-\section{Example: Sharing defun Libraries}
-
-File \code{helpers.slip}:
-
-\begin{lstlisting}[language=Slip]
-defun prefix(s):
-    return "bus_" + s
-
-defun inc(n):
-    return n + 1
-\end{lstlisting}
-
-File \code{design.slip}:
-
-\begin{lstlisting}[language=Slip]
-include "helpers.slip";
-
-module top (clk) {
-    logic clk;
-    inner u1 {
-        .clk,
-        "data_(.*)" => "$prefix(\\1)",
-        "ch_(.*)" => "$inc(\\1)"
-    };
-}
-\end{lstlisting}
-
-\section{Recursive Includes}
-
-Include directives in included files are also resolved. The same file is never included twice (deduplicated by absolute path).
-
-\section{Restrictions}
-
-\begin{itemize}
-  \item \code{include} must appear at the top level --- not inside module bodies.
-  \item The included path must be a string literal. Variable-based paths are not supported.
-  \item Circular includes are detected and silently skipped.
-\end{itemize}
-
-% ──────────────────────────────────────────────────────────────────
 \chapter{Module Declaration}
 % ──────────────────────────────────────────────────────────────────
 
@@ -991,6 +937,60 @@ end
 
 \begin{itemize}
   \item \code{while} loops are not supported (combinational while loops are unsafe in synthesis).
+\end{itemize}
+
+% ──────────────────────────────────────────────────────────────────
+\chapter{Include Directive}
+% ──────────────────────────────────────────────────────────────────
+
+The \code{include} directive imports \code{defun} function definitions and module declarations from another \code{.slip} file. It must appear at the top level, outside module bodies.
+
+\section{Basic Usage}
+
+\begin{lstlisting}[language=Slip]
+include "helpers.slip";
+include "utils/common.slip";
+\end{lstlisting}
+
+Included files are lexed, parsed, and their contents merged into the compilation unit. Relative paths are resolved from the directory of the including file.
+
+\section{Example: Sharing defun Libraries}
+
+File \code{helpers.slip}:
+
+\begin{lstlisting}[language=Slip]
+defun prefix(s):
+    return "bus_" + s
+
+defun inc(n):
+    return n + 1
+\end{lstlisting}
+
+File \code{design.slip}:
+
+\begin{lstlisting}[language=Slip]
+include "helpers.slip";
+
+module top (clk) {
+    logic clk;
+    inner u1 {
+        .clk,
+        "data_(.*)" => "$prefix(\\1)",
+        "ch_(.*)" => "$inc(\\1)"
+    };
+}
+\end{lstlisting}
+
+\section{Recursive Includes}
+
+Include directives in included files are also resolved. The same file is never included twice (deduplicated by absolute path).
+
+\section{Restrictions}
+
+\begin{itemize}
+  \item \code{include} must appear at the top level --- not inside module bodies.
+  \item The included path must be a string literal. Variable-based paths are not supported.
+  \item Circular includes are detected and silently skipped.
 \end{itemize}
 
 % ──────────────────────────────────────────────────────────────────

@@ -4,7 +4,7 @@
 
 > *Slip* — to move smoothly and effortlessly. Write hardware descriptions that flow from intent to implementation.
 
-English | **[中文](README_CN.md)**
+English | **[中文](README_CN.md)** | **[User Manual (PDF)](docs/tex/user-manual.pdf)**
 
 ## Overview
 
