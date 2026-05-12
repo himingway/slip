@@ -142,8 +142,10 @@ pip install -e .
 \begin{lstlisting}[language=bash]
 slip build <file.slip>                        # output to ./build/
 slip build -o <out_dir> <file.slip>           # custom output directory
-slip build -ip <ip_dir> <file.slip>           # include external IP directory
+slip build -ip <ip_dir> <file.slip>           # include external IP directory (recursive)
 slip build -ip <dir1> -ip <dir2> <file.slip>  # multiple IP directories
+slip build -f <file.f> <file.slip>            # use VCS-format filelist
+slip build -f <file.f> -ip <dir> <file.slip>  # filelist + directory (combined)
 \end{lstlisting}
 
 Each module in the \code{.slip} file generates a separate \code{.sv} file in the output directory.
@@ -153,6 +155,7 @@ Each module in the \code{.slip} file generates a separate \code{.sv} file in the
 \begin{lstlisting}[language=bash]
 slip check <file.slip>                        # validate only
 slip check -ip <ip_dir> <file.slip>           # with IP directory
+slip check -f <file.f> <file.slip>            # with filelist
 \end{lstlisting}
 
 Runs the full compilation pipeline (parsing, semantic analysis, code generation) but discards the output. Useful for CI validation.
@@ -1467,20 +1470,55 @@ Bare integers are \textbf{not allowed} in port connections --- use width-prefixe
 
 \chapter{IP Integration}
 
-Slip can instantiate external SystemVerilog modules by providing IP directories:
+Slip can instantiate external SystemVerilog modules by providing IP directories or VCS-format filelists:
 
 \begin{lstlisting}[language=bash]
 slip build -ip ./ip_cores -ip ./vendor_lib design.slip
+slip build -f ip.f design.slip
+slip build -f ip.f -ip ./ip_cores design.slip
 \end{lstlisting}
 
 \section{How It Works}
 
 \begin{enumerate}
-  \item Slip scans IP directories for \code{.sv} and \code{.v} files.
+  \item Slip collects IP sources from filelists (\code{-f}) and IP directories (\code{-ip}).
+  \item IP directories are scanned recursively for \code{.sv} and \code{.v} files.
+  \item All IP files are parsed together with a shared preprocessor context, so \code{`define} macros propagate across files.
   \item When an instance references a module not defined in the \code{.slip} source, Slip uses pyslang to reflect the external module's ports and parameters.
   \item Port widths are evaluated using the instance's parameter overrides.
   \item Signals are created with correct widths for regex-mapped connections.
 \end{enumerate}
+
+\section{Filelist Support}
+
+Slip supports VCS-format filelist (\code{.f}) files for explicit control over IP source ordering, include paths, and macro definitions:
+
+\begin{lstlisting}[language=Slip]
+// ip.f
++incdir+./include
++define+DATA_WIDTH=32
++define+ADDR_WIDTH=8
+./rtl/fifo.sv
+./rtl/arbiter.sv
+-f vendor_lib.f
+\end{lstlisting}
+
+\begin{itemize}
+  \item \code{+incdir+path} --- include search directory (multiple paths separated by \code{+})
+  \item \code{+define+MACRO=value} --- macro definition
+  \item \code{-f sub.f} --- nested filelist reference (recursive, with circular reference detection)
+  \item File paths are resolved relative to the filelist location
+  \item Duplicate files are automatically deduplicated
+  \item Comments (\code{//}) and empty lines are ignored
+\end{itemize}
+
+\section{Two-Pass Scanning}
+
+IP scanning uses a two-pass approach to resolve \code{`define} ordering:
+
+\textbf{Pass 1 --- Collection}: Parse all filelists, collect source files, include paths, and macro definitions. Recursively scan IP directories and merge with filelist entries (deduplication).
+
+\textbf{Pass 2 --- Reflection}: Parse all IP files together using \code{SyntaxTree.fromFiles()} with a shared preprocessor context. This ensures that \code{`define} macros in one file are available to subsequent files, solving the define ordering problem that would occur with per-file parsing.
 
 \section{Example}
 

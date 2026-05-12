@@ -553,14 +553,57 @@ class ExternalModuleInfo:
     ports: list[dict]       # 包含 width_expr 等
 ```
 
+### 9.2 Filelist 解析
+
+`slang_integration.parse_filelist(filelist_path)` 解析 VCS 格式 filelist 文件：
+
+```python
+@dataclass(frozen=True)
+class FilelistData:
+    files: tuple[Path, ...]      # 源文件列表（按顺序）
+    incdirs: tuple[Path, ...]    # include 搜索路径
+    defines: tuple[str, ...]     # 宏定义（"MACRO=value" 或 "MACRO"）
+```
+
+支持的格式：
+- `+incdir+路径` — include 搜索目录，多个路径用 `+` 分隔
+- `+define+宏名=值` 或 `+define+宏名` — 宏定义
+- `-f 子文件.f` — 递归解析子 filelist（支持循环引用检测）
+- `//` 注释和空行被忽略
+- 文件路径相对于 filelist 所在目录解析，绝对路径保持不变
+- 重复文件自动去重
+
+### 9.3 两遍 IP 扫描
+
+`slang_integration.build_ip_index(filelists, ip_dirs)` 构建 IP 模块索引：
+
+**Pass 1 — 收集**：
+- 解析所有 filelist 文件，收集源文件、incdir、define
+- 递归扫描 IP 目录（`*.sv`、`*.v`），合并去重
+
+**Pass 2 — 反射**：
+- 使用 `SyntaxTree.fromFiles()` 一次性解析所有 IP 文件，共享预处理器上下文
+- define 跨文件自动传播，解决 define 顺序问题
+- 从统一 `Compilation` 中提取所有模块信息，构建 `IPIndex`
+
 ---
 
 ## 10. 命令行接口
 
 ```
-slip build [-o <out_dir>] [-ip <ip_dirs>] <file.slip>
-slip check [-ip <ip_dirs>] <file.slip>
+slip build [-o <out_dir>] [-ip <ip_dirs>] [-f <filelists>] <file.slip>
+slip check [-ip <ip_dirs>] [-f <filelists>] <file.slip>
 ```
+
+参数：
+- `-o <out_dir>` — 输出目录（默认 `./build`）
+- `-ip <ip_dir>` — IP 源目录，可多次指定，递归扫描 `*.sv`/`*.v`
+- `-f <file.f>` — VCS 格式 filelist 文件，可多次指定
+
+文件加载优先级：
+1. `-f filelist.f`（最高优先级，按文件内顺序）
+2. `-ip dir`（递归扫描，两遍处理）
+3. 本地 `.slip` 模块
 
 ---
 

@@ -24,7 +24,7 @@ Slip 是一种简洁的硬件描述语言，本质上是 SystemVerilog 的语法
 - **编译时元编程** — `` `for `` 循环和 `` `if `` 条件编译，支持常量折叠
 - **模板标识符** — `` `for `` 循环变量可在标识符名称中展开（如 `data_`i` → `data_0`）
 - **模块实例化** — 简洁语法，支持同名简写（`.clk`）、显式连接和正则端口映射
-- **IP 集成** — 通过 pyslang 自动反射外部 SystemVerilog IP 的端口和参数
+- **IP 集成** — 通过 pyslang 自动反射外部 SystemVerilog IP 的端口和参数，支持 VCS filelist（`-f`）和递归目录扫描
 - **参数与局部参数** — 模块级 `param` 可覆盖，模块体内 `localparam` 不可覆盖
 - **多驱动检测** — 信号被多个 `seq`/`comb` 块驱动时报错
 - **组合逻辑环路检测** — `comb` 块内的反馈环路会被检测并报错
@@ -298,7 +298,9 @@ pip install -e .
 ```bash
 slip build design.slip                    # 输出到 ./build
 slip build -o output design.slip          # 输出到 ./output
-slip build -ip ip_dir design.slip         # 包含外部 IP 目录
+slip build -ip ip_dir design.slip         # 包含外部 IP 目录（递归扫描）
+slip build -f ip.f design.slip            # 使用 VCS 格式 filelist
+slip build -f ip.f -ip ip_dir design.slip # filelist + 目录（组合使用）
 ```
 
 ### 检查
@@ -306,7 +308,27 @@ slip build -ip ip_dir design.slip         # 包含外部 IP 目录
 ```bash
 slip check design.slip                    # 仅验证，不生成输出
 slip check -ip ip_dir design.slip         # 含 IP 目录
+slip check -f ip.f design.slip            # 含 filelist
 ```
+
+### Filelist 格式
+
+Slip 支持 VCS 格式的 filelist（`.f`）文件：
+
+```
+// 注释
++incdir+./include
++define+DATA_WIDTH=32
+./rtl/fifo.sv
+./rtl/arbiter.sv
+-f sub_filelist.f
+```
+
+- `+incdir+路径` — include 搜索目录
+- `+define+宏名=值` — 宏定义
+- `-f 子文件.f` — 嵌套 filelist 引用
+- 文件路径相对于 filelist 所在目录解析
+- 重复文件自动去重
 
 ## 架构
 
@@ -345,4 +367,4 @@ uv run pytest tests/ --cov=slip --cov-report=term-missing
 
 ## 许可证
 
-MIT
+本项目基于 MIT 许可证发布。详见 [LICENSE](LICENSE) 文件。

@@ -15,7 +15,7 @@ from slip.slang_integration import reflect_module, ModuleInfo
 from slip.codegen import CodeGenerator
 from slip.errors.semantic import SlipSemanticError
 
-from conftest import FIXTURES, IP_DIR, compile_from_path as compile_with_ip
+from conftest import FIXTURES, IP_DIR, compile_from_path as compile_with_ip, compile_source
 
 
 # ════════════════════════════════════════════════════════════════
@@ -116,11 +116,14 @@ class TestIPInstanceResolve:
             compile_with_ip(FIXTURES / "ip_top_fifo_user.slip", [])
 
     def test_wrong_ip_dir_error(self):
-        with pytest.raises(SlipSemanticError, match="cannot resolve"):
-            compile_with_ip(
-                FIXTURES / "ip_top_fifo_user.slip",
-                [FIXTURES],  # no .sv files in this dir
-            )
+        """IP dir with no .sv files at all raises error."""
+        empty_dir = FIXTURES / "no_sv_here"
+        empty_dir.mkdir(exist_ok=True)
+        try:
+            with pytest.raises(SlipSemanticError, match="cannot resolve"):
+                compile_with_ip(FIXTURES / "ip_top_fifo_user.slip", [empty_dir])
+        finally:
+            empty_dir.rmdir()
 
 
 # ════════════════════════════════════════════════════════════════
@@ -357,3 +360,61 @@ class TestDefineMacroIP:
         sv = compile_with_ip(FIXTURES / "ip_top_defined_ip.slip", [IP_DIR])
         text = sv["define_user"]
         assert "logic [31:0] my_data" in text
+
+
+# ════════════════════════════════════════════════════════════════
+# H. Filelist end-to-end tests (-f flag)
+# ════════════════════════════════════════════════════════════════
+
+class TestFilelistEndToEnd:
+    """End-to-end tests using VCS filelist format."""
+
+    def test_build_with_filelist(self, tmp_path):
+        """Build using -f filelist instead of -ip directory."""
+        from slip.cli._pipeline import run_build
+        fl = IP_DIR / "test.f"
+        result = run_build(FIXTURES / "ip_top_fifo_user.slip", tmp_path, [], filelists=[fl])
+        assert (tmp_path / "fifo_user.sv").exists()
+        sv = (tmp_path / "fifo_user.sv").read_text()
+        assert "prim_fifo" in sv
+        assert ".wdata(fifo_wdata)" in sv
+
+    def test_check_with_filelist(self):
+        """Check using -f filelist."""
+        from slip.cli._pipeline import run_check
+        fl = IP_DIR / "test.f"
+        run_check(FIXTURES / "ip_top_fifo_user.slip", [], filelists=[fl])
+
+    def test_filelist_and_ip_dirs_combined(self):
+        """Filelist and -ip directory work together."""
+        from slip.cli._pipeline import run_check
+        # test.f has prim_fifo and prim_obuf; IP_DIR also has them + others
+        fl = IP_DIR / "test.f"
+        # Should succeed — filelist provides prim_fifo, dir provides the rest
+        run_check(FIXTURES / "ip_top_fifo_user.slip", [IP_DIR], filelists=[fl])
+
+    def test_filelist_with_nested_f(self):
+        """Nested -f references work end-to-end."""
+        from slip.cli._pipeline import run_check
+        fl = IP_DIR / "test_main.f"
+        # test_main.f -> test_sub.f (prim_sync_reset) + defined_ip
+        run_check(FIXTURES / "ip_top_reset_wrap.slip", [], filelists=[fl])
+
+    def test_compile_source_with_filelist(self):
+        """compile_source helper supports filelists parameter."""
+        source = (
+            "module top (clk, rst_n) {\n"
+            "  logic clk;\n"
+            "  logic rst_n;\n"
+            "  prim_sync_reset u_rst {\n"
+            "    .clk,\n"
+            "    .rst_n_async(rst_n),\n"
+            r'    "rst_n_(.+)" => "rst_n_\1"' "\n"
+            "  };\n"
+            "}\n"
+        )
+        fl = IP_DIR / "test_sub.f"
+        sv = compile_source(source, filelists=[fl])
+        assert "top" in sv
+        assert "prim_sync_reset" in sv["top"]
+        assert ".rst_n_sync(rst_n_sync)" in sv["top"]

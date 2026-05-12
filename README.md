@@ -26,7 +26,7 @@ Every Slip construct maps directly to a SystemVerilog equivalent. The generated 
 - **Full operator set** — arithmetic shifts (`<<<`/`>>>`), exponentiation (`**`), case equality (`===`/`!==`), width cast (`8'(expr)`)
 - **Replication syntax** — `{4{1'b0}}` generates correct SystemVerilog replication
 - **Module instantiation** — concise syntax with same-name shorthand (`.clk`), explicit connections, and regex port mapping
-- **IP integration** — automatic port/parameter reflection of external SystemVerilog IP via pyslang
+- **IP integration** — automatic port/parameter reflection of external SystemVerilog IP via pyslang, with VCS filelist (`-f`) support and recursive directory scanning
 - **Parameter and localparam** — module-level parameters with override, body-level localparams without
 - **Multi-driver detection** — signals driven by multiple `seq`/`comb` blocks raise a compile error
 - **Combinational loop detection** — feedback loops inside `comb` blocks are detected and reported as errors
@@ -300,7 +300,9 @@ Requires Python >= 3.10.
 ```bash
 slip build design.slip                    # output to ./build
 slip build -o output design.slip          # output to ./output
-slip build -ip ip_dir design.slip         # include external IP directory
+slip build -ip ip_dir design.slip         # include external IP directory (recursive)
+slip build -f ip.f design.slip            # use VCS-format filelist
+slip build -f ip.f -ip ip_dir design.slip # filelist + directory (combined)
 ```
 
 ### Check
@@ -308,7 +310,27 @@ slip build -ip ip_dir design.slip         # include external IP directory
 ```bash
 slip check design.slip                    # validate without generating output
 slip check -ip ip_dir design.slip         # with IP directory
+slip check -f ip.f design.slip            # with filelist
 ```
+
+### Filelist Format
+
+Slip supports VCS-format filelist (`.f`) files:
+
+```
+// Comment
++incdir+./include
++define+DATA_WIDTH=32
+./rtl/fifo.sv
+./rtl/arbiter.sv
+-f sub_filelist.f
+```
+
+- `+incdir+path` — include search directory
+- `+define+MACRO=value` — macro definition
+- `-f sub.f` — nested filelist reference
+- File paths are resolved relative to the filelist location
+- Duplicate files are automatically deduplicated
 
 ## Architecture
 
@@ -347,4 +369,4 @@ uv run pytest tests/ --cov=slip --cov-report=term-missing
 
 ## License
 
-MIT
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.

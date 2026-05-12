@@ -21,6 +21,7 @@ class SemanticAnalyzer:
         self,
         unit: Union[CompilationUnit, list[Module]],
         ip_dirs: list[Path] | None = None,
+        filelists: list[Path] | None = None,
     ) -> list[HDLModule]:
         if ip_dirs is None:
             ip_dirs = []
@@ -57,7 +58,7 @@ class SemanticAnalyzer:
                     stacklevel=2,
                 )
 
-        return resolve_instances(results, ip_dirs)
+        return resolve_instances(results, ip_dirs, filelists)
 
     def _analyze_module(self, module: Module) -> HDLModule:
         # 0. Expand metaprogramming (#for, #if) — already done in analyze()

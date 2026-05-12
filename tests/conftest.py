@@ -20,22 +20,30 @@ IP_DIR = FIXTURES / "ip"
 # ── Pipeline helpers ────────────────────────────────────────────
 
 
-def compile_source(source: str, ip_dirs: list[Path] | None = None) -> dict[str, str]:
+def compile_source(
+    source: str,
+    ip_dirs: list[Path] | None = None,
+    filelists: list[Path] | None = None,
+) -> dict[str, str]:
     """Compile a Slip source string through the full pipeline.
 
     Returns a dict mapping module name -> generated SystemVerilog text.
     """
     tokens = Lexer(source, "test.slip").tokenize()
     unit = Parser(tokens, "test.slip").parse()
-    ir = SemanticAnalyzer().analyze(unit, ip_dirs or [])
+    ir = SemanticAnalyzer().analyze(unit, ip_dirs or [], filelists)
     return CodeGenerator().generate(ir)
 
 
-def compile_from_path(slip_path: Path, ip_dirs: list[Path]) -> dict[str, str]:
+def compile_from_path(
+    slip_path: Path,
+    ip_dirs: list[Path],
+    filelists: list[Path] | None = None,
+) -> dict[str, str]:
     """Compile a .slip file on disk, with IP directory resolution."""
     tokens = Lexer(slip_path.read_text(), str(slip_path)).tokenize()
     unit = Parser(tokens, str(slip_path)).parse()
-    ir = SemanticAnalyzer().analyze(unit, ip_dirs)
+    ir = SemanticAnalyzer().analyze(unit, ip_dirs, filelists)
     return CodeGenerator().generate(ir)
 
 

@@ -7,17 +7,23 @@ from pathlib import Path
 from slip.errors.semantic import SlipSemanticError
 from slip.ir import HDLInstance, HDLModule, HDLSignal, HDLType
 from slip.semantic.regex_funcs import evaluate_replacement
+from slip.slang_integration.ip_scanner import IPIndex, build_ip_index
 
 
 def resolve_instances(
     ir_modules: list[HDLModule],
     ip_dirs: list[Path],
+    filelists: list[Path] | None = None,
 ) -> list[HDLModule]:
     """Resolve regex port mappings for all instances across all modules."""
     module_index: dict[str, HDLModule] = {m.name: m for m in ir_modules}
+
+    # Build IP index from filelists and IP directories
+    ip_index = build_ip_index(filelists, ip_dirs)
+
     results: list[HDLModule] = []
     for mod in ir_modules:
-        results.append(_resolve_module(mod, module_index, ip_dirs))
+        results.append(_resolve_module(mod, module_index, ip_index))
     return results
 
 
@@ -55,7 +61,7 @@ def _check_required_ports(
 def _resolve_module(
     mod: HDLModule,
     module_index: dict[str, HDLModule],
-    ip_dirs: list[Path],
+    ip_index: IPIndex,
 ) -> HDLModule:
     new_signals = list(mod.signals)
     new_instances: list[HDLInstance] = []
@@ -63,7 +69,7 @@ def _resolve_module(
     for inst in mod.instances:
         # Check localparam override
         if inst.param_map:
-            lp_names = _get_target_localparams(inst.target, module_index, ip_dirs)
+            lp_names = _get_target_localparams(inst.target, module_index, ip_index)
             for pname, _ in inst.param_map:
                 if pname in lp_names:
                     raise SlipSemanticError(
@@ -77,7 +83,7 @@ def _resolve_module(
             new_instances.append(inst)
             continue
         expanded_inst, extra_signals = _expand_regex_connections(
-            inst, mod, module_index, ip_dirs, new_signals
+            inst, mod, module_index, ip_index, new_signals
         )
         new_instances.append(expanded_inst)
         new_signals.extend(extra_signals)
@@ -97,9 +103,10 @@ def _resolve_module(
 def _get_target_ports(
     target_name: str,
     module_index: dict[str, HDLModule],
-    ip_dirs: list[Path],
+    ip_index: IPIndex,
 ) -> list[tuple[str, str, str | None]]:
     """Get target module ports as (name, direction, width_sv) tuples."""
+    # Check local modules first
     if target_name in module_index:
         target = module_index[target_name]
         return [
@@ -107,21 +114,10 @@ def _get_target_ports(
             for p in target.ports
         ]
 
-    for ip_dir in ip_dirs:
-        for sv_file in ip_dir.glob("*.sv"):
-            try:
-                from slip.slang_integration import reflect_module
-                info = reflect_module(sv_file, target_name)
-                return [(p.name, p.direction, p.width) for p in info.ports]
-            except Exception:
-                continue
-        for v_file in ip_dir.glob("*.v"):
-            try:
-                from slip.slang_integration import reflect_module
-                info = reflect_module(v_file, target_name)
-                return [(p.name, p.direction, p.width) for p in info.ports]
-            except Exception:
-                continue
+    # Check IP index
+    ports = ip_index.get_ports(target_name)
+    if ports is not None:
+        return ports
 
     raise SlipSemanticError(
         "<instance>", 0, 0,
@@ -132,31 +128,26 @@ def _get_target_ports(
 def _get_target_localparams(
     target_name: str,
     module_index: dict[str, HDLModule],
-    ip_dirs: list[Path],
+    ip_index: IPIndex,
 ) -> set[str]:
     """Get the set of localparam names for a target module."""
+    # Check local modules first
     if target_name in module_index:
         return {lp.name for lp in module_index[target_name].localparams}
-    for ip_dir in ip_dirs:
-        for sv_file in list(ip_dir.glob("*.sv")) + list(ip_dir.glob("*.v")):
-            try:
-                from slip.slang_integration import reflect_module
-                info = reflect_module(sv_file, target_name)
-                return {p.name for p in info.params if p.is_local}
-            except Exception:
-                continue
-    return set()
+
+    # Check IP index
+    return ip_index.get_localparams(target_name)
 
 
 def _expand_regex_connections(
     inst: HDLInstance,
     parent_mod: HDLModule,
     module_index: dict[str, HDLModule],
-    ip_dirs: list[Path],
+    ip_index: IPIndex,
     existing_signals: list[HDLSignal],
 ) -> tuple[HDLInstance, list[HDLSignal]]:
     """Expand regex port connections for a single instance."""
-    target_ports = _get_target_ports(inst.target, module_index, ip_dirs)
+    target_ports = _get_target_ports(inst.target, module_index, ip_index)
 
     port_map = dict(inst.port_map)
 
