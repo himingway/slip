@@ -178,7 +178,7 @@ class TestModuleFooter:
 class TestEmitBlockItem:
     def test_assignment(self):
         a = HDLAssignment("x", "1")
-        result = fragment._emit_block_item(a)
+        result = fragment._emit_block_item(a, fragment.IndentationManager())
         assert len(result) == 1
         assert "x = 1;" in result[0]
 
@@ -188,7 +188,7 @@ class TestEmitBlockItem:
             then_body=(HDLAssignment("q", "1"),),
             else_body=(HDLAssignment("q", "0"),),
         )
-        result = fragment._emit_block_item(blk)
+        result = fragment._emit_block_item(blk, fragment.IndentationManager())
         text = "\n".join(result)
         assert "if (en) begin" in text
         assert "end else begin" in text
@@ -200,13 +200,13 @@ class TestEmitBlockItem:
             cond="en",
             then_body=(HDLAssignment("q", "1"),),
         )
-        result = fragment._emit_block_item(blk)
+        result = fragment._emit_block_item(blk, fragment.IndentationManager())
         text = "\n".join(result)
         assert "if (en) begin" in text
         assert "end else begin" not in text
 
     def test_unknown_type_returns_empty(self):
-        result = fragment._emit_block_item("not a real item")
+        result = fragment._emit_block_item("not a real item", fragment.IndentationManager())
         assert result == []
 
 

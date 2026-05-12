@@ -14,24 +14,51 @@ _KEYWORDS: dict[str, TokenType] = {
     "assign": TokenType.ASSIGN,
     "seq": TokenType.SEQ,
     "comb": TokenType.COMB,
+    "initial": TokenType.INITIAL,
     "pos": TokenType.POS,
     "neg": TokenType.NEG,
     "if": TokenType.IF,
     "else": TokenType.ELSE,
     "for": TokenType.FOR,
+    "case": TokenType.CASE,
+    "casez": TokenType.CASEZ,
+    "casex": TokenType.CASEX,
+    "default": TokenType.DEFAULT,
+    "inside": TokenType.INSIDE,
+    "defun": TokenType.DEFUN,
+    "return": TokenType.RETURN,
 }
 
 # Regex rules: (pattern, token_type_or_None)
 # Order matters: longest match first for multi-char operators.
 _REGEX_RULES: list[tuple[re.Pattern, TokenType | None]] = [
     # Multi-char operators (must come before single-char prefixes)
+    # Order: longest match first
     (re.compile(r"=>"), TokenType.ARROW),
+    # Compound assignment operators (must come before their shorter prefixes)
+    (re.compile(r"<<<="), TokenType.LT_LT_LT_EQ),
+    (re.compile(r">>>="), TokenType.GT_GT_GT_EQ),
+    (re.compile(r"<<="), TokenType.LT_LT_EQ),
+    (re.compile(r">>="), TokenType.GT_GT_EQ),
+    (re.compile(r"\+="), TokenType.PLUS_EQ),
+    (re.compile(r"-="), TokenType.MINUS_EQ),
+    (re.compile(r"\*="), TokenType.STAR_EQ),
+    (re.compile(r"/="), TokenType.SLASH_EQ),
+    (re.compile(r"%="), TokenType.PERCENT_EQ),
+    (re.compile(r"&="), TokenType.AMP_EQ),
+    (re.compile(r"\|="), TokenType.PIPE_EQ),
+    (re.compile(r"\^="), TokenType.CARET_EQ),
     (re.compile(r"<="), TokenType.LE),
     (re.compile(r">="), TokenType.GT_EQ),
+    (re.compile(r"==="), TokenType.EQ_EQ_EQ),
+    (re.compile(r"!=="), TokenType.BANG_EQ_EQ),
     (re.compile(r"=="), TokenType.EQ_EQ),
     (re.compile(r"!="), TokenType.BANG_EQ),
+    (re.compile(r"<<<"), TokenType.LT_LT_LT),
+    (re.compile(r">>>"), TokenType.GT_GT_GT),
     (re.compile(r"<<"), TokenType.LT_LT),
     (re.compile(r">>"), TokenType.GT_GT),
+    (re.compile(r"\*\*"), TokenType.STAR_STAR),
     (re.compile(r"&&"), TokenType.AMP_AMP),
     (re.compile(r"\|\|"), TokenType.PIPE_PIPE),
     # Single-char operators and delimiters
@@ -66,11 +93,37 @@ _REGEX_RULES: list[tuple[re.Pattern, TokenType | None]] = [
 ]
 
 # Integer literal: Verilog-style with optional width/radix, or plain decimal
+# ? is a synonym for z in Verilog radix-based literals
 _INT_LITERAL_RE = re.compile(
-    r"\d+'[bBdDhHoO][0-9a-fA-F_xXzZ]+"
+    r"\d+'[bBdDhHoO][0-9a-fA-F_xXzZ?]+"
     r"|"
     r"[0-9][0-9_]*"
 )
+
+_RADIX_DIGIT_MAP: dict[str, str] = {
+    "b": "01",
+    "o": "01234567",
+    "d": "0123456789",
+    "h": "0123456789abcdefABCDEF",
+}
+
+
+def _validate_int_literal(val: str) -> str | None:
+    """Validate a Verilog integer literal. Returns error message or None."""
+    m = re.match(r"(\d+)'([bBdDhHoO])([0-9a-fA-F_xXzZ?]+)", val)
+    if not m:
+        return None  # plain decimal, always valid
+    radix = m.group(2).lower()
+    digits = m.group(3).replace("_", "")
+    if not digits:
+        return f"integer literal has no actual digit value: {val}"
+    valid = _RADIX_DIGIT_MAP.get(radix, "")
+    for c in digits:
+        if c in "xXzZ?":
+            continue
+        if c not in valid:
+            return f"invalid digit '{c}' for radix '{radix}' in literal: {val}"
+    return None
 
 _IDENT_RE = re.compile(r"\$?[a-zA-Z_][a-zA-Z0-9_]*")
 
@@ -147,23 +200,32 @@ def _merge_tick_idents(tokens: list[Token]) -> list[Token]:
 
 
 def _merge_template_idents(tokens: list[Token]) -> list[Token]:
-    """Merge IDENT + TICK_IDENT into IDENT for template identifiers like data_`i."""
-    result: list[Token] = []
-    i = 0
-    while i < len(tokens):
-        if (
-            i + 1 < len(tokens)
-            and tokens[i].type == TokenType.IDENT
-            and tokens[i + 1].type == TokenType.TICK_IDENT
-        ):
-            result.append(Token(TokenType.IDENT,
-                                tokens[i].value + tokens[i + 1].value,
-                                tokens[i].line, tokens[i].col))
-            i += 2
-        else:
-            result.append(tokens[i])
-            i += 1
-    return result
+    """Merge IDENT + TICK_IDENT into IDENT for template identifiers like data_`i.
+
+    Loops until no more merges occur, handling multiple backtick variables
+    like a`i_`j -> IDENT(a`i_`j).
+    """
+    changed = True
+    while changed:
+        changed = False
+        result: list[Token] = []
+        i = 0
+        while i < len(tokens):
+            if (
+                i + 1 < len(tokens)
+                and tokens[i].type == TokenType.IDENT
+                and tokens[i + 1].type == TokenType.TICK_IDENT
+            ):
+                result.append(Token(TokenType.IDENT,
+                                    tokens[i].value + tokens[i + 1].value,
+                                    tokens[i].line, tokens[i].col))
+                i += 2
+                changed = True
+            else:
+                result.append(tokens[i])
+                i += 1
+        tokens = result
+    return tokens
 
 
 class Lexer:
@@ -198,6 +260,9 @@ class Lexer:
             m = _INT_LITERAL_RE.match(self._source, self._pos)
             if m and (self._pos == 0 or not self._source[self._pos - 1].isalpha()):
                 val = m.group()
+                err = _validate_int_literal(val)
+                if err:
+                    raise SlipSyntaxError(self._filename, self._line, self._col, err)
                 tok = Token(TokenType.INT_LITERAL, val, self._line, self._col)
                 self._advance(len(val))
                 tokens.append(tok)

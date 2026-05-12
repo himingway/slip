@@ -1,18 +1,25 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from slip.ast.base import SourceLocation
-from slip.ast.expressions import Expr, IdentExpr, IntLiteralExpr
+from slip.ast.expressions import BinaryExpr, Expr, IdentExpr, IndexExpr, IntLiteralExpr
 from slip.ast.instance import Connection, InstanceStmt, NamedParam
 from slip.ast.metaprogram import GenForStmt, GenIfStmt
 from slip.ast.module import Module, Param, PortItem
 from slip.ast.statements import (
     AssignStmt,
     BlockStmt,
+    CaseItem,
+    CaseStmt,
     CombBlock,
     ForStmt,
+    FuncDef,
     IfStmt,
+    InitialBlock,
     LocalParamDecl,
     LValue,
+    ReturnStmt,
     SeqBlock,
     SignalDecl,
     Statement,
@@ -20,6 +27,29 @@ from slip.ast.statements import (
 from slip.errors.syntax import SlipSyntaxError
 from slip.lexer.token import Token, TokenType
 from slip.parser.pratt import PrattParser
+
+
+@dataclass
+class CompilationUnit:
+    modules: list[Module]
+    funcdefs: list[FuncDef]
+
+# Compound assignment token types mapped to their base operator strings.
+# Desugaring: a += b  →  a = a + b
+_COMPOUND_OPS: dict[TokenType, str] = {
+    TokenType.PLUS_EQ: "+",
+    TokenType.MINUS_EQ: "-",
+    TokenType.STAR_EQ: "*",
+    TokenType.SLASH_EQ: "/",
+    TokenType.PERCENT_EQ: "%",
+    TokenType.AMP_EQ: "&",
+    TokenType.PIPE_EQ: "|",
+    TokenType.CARET_EQ: "^",
+    TokenType.LT_LT_EQ: "<<",
+    TokenType.GT_GT_EQ: ">>",
+    TokenType.LT_LT_LT_EQ: "<<<",
+    TokenType.GT_GT_GT_EQ: ">>>",
+}
 
 
 class Parser:
@@ -51,11 +81,15 @@ class Parser:
             )
         return tok
 
-    def parse(self) -> list[Module]:
+    def parse(self) -> CompilationUnit:
         modules: list[Module] = []
+        funcdefs: list[FuncDef] = []
         while self.peek().type != TokenType.EOF:
-            modules.append(self._parse_module())
-        return modules
+            if self.peek().type == TokenType.DEFUN:
+                funcdefs.append(self._parse_funcdef())
+            else:
+                modules.append(self._parse_module())
+        return CompilationUnit(modules=modules, funcdefs=funcdefs)
 
     def _parse_module(self) -> Module:
         tok = self.expect(TokenType.MODULE)
@@ -88,6 +122,55 @@ class Parser:
             params=tuple(params),
             ports=tuple(ports),
             body=tuple(body),
+        )
+
+    def _parse_funcdef(self) -> FuncDef:
+        tok = self.advance()  # consume 'defun'
+        name_tok = self.expect(TokenType.IDENT)
+        self.expect(TokenType.LPAREN)
+        params = self._parse_funcdef_params()
+        self.expect(TokenType.RPAREN)
+        self.expect(TokenType.COLON)
+
+        # Parse indented body: statements whose first token is at col > defun.col
+        body = self._parse_indented_body(tok.col)
+
+        return FuncDef(self._loc(tok), name=name_tok.value, params=tuple(params), body=tuple(body))
+
+    def _parse_funcdef_params(self) -> list[str]:
+        params: list[str] = []
+        if self.peek().type == TokenType.RPAREN:
+            return params
+        params.append(self.expect(TokenType.IDENT).value)
+        while self.peek().type == TokenType.COMMA:
+            self.advance()
+            params.append(self.expect(TokenType.IDENT).value)
+        return params
+
+    def _parse_indented_body(self, base_col: int) -> list[Statement]:
+        stmts: list[Statement] = []
+        while True:
+            tok = self.peek()
+            if tok.type == TokenType.EOF:
+                break
+            # If the next token is at or before the defun's column, the block has ended
+            if tok.col <= base_col:
+                break
+            stmts.append(self._parse_funcdef_stmt())
+        return stmts
+
+    def _parse_funcdef_stmt(self) -> Statement:
+        tok = self.peek()
+        if tok.type == TokenType.RETURN:
+            self.advance()  # consume 'return'
+            value = self._parse_expr()
+            # Optional semicolon
+            if self.peek().type == TokenType.SEMICOLON:
+                self.advance()
+            return ReturnStmt(self._loc(tok), value=value)
+        raise SlipSyntaxError(
+            self._filename, tok.line, tok.col,
+            f"unexpected token '{tok.value}' in function body"
         )
 
     def _parse_parameter_list(self) -> list[Param]:
@@ -139,7 +222,13 @@ class Parser:
         width = None
         if self.peek().type == TokenType.LBRACK:
             self.advance()
-            width = self._parse_expr()
+            first = self._parse_expr()
+            if self.peek().type == TokenType.COLON:
+                self.advance()
+                second = self._parse_expr()
+                width = BinaryExpr(first.loc, ":", first, second)
+            else:
+                width = first
             self.expect(TokenType.RBRACK)
         return PortItem(self._loc(name_tok), name=name_tok.value, width=width)
 
@@ -160,10 +249,14 @@ class Parser:
             return self._parse_seq_block()
         if tok.type == TokenType.COMB:
             return self._parse_comb_block()
+        if tok.type == TokenType.INITIAL:
+            return self._parse_initial_block()
         if tok.type == TokenType.IF:
             return self._parse_if_stmt()
         if tok.type == TokenType.FOR:
             return self._parse_for_stmt()
+        if tok.type in (TokenType.CASE, TokenType.CASEZ, TokenType.CASEX):
+            return self._parse_case_stmt()
         if tok.type == TokenType.LOCALPARAM:
             return self._parse_localparam_decl()
         if tok.type == TokenType.TICK_FOR:
@@ -176,11 +269,12 @@ class Parser:
             or (self.peek(1).type == TokenType.HASH and self.peek(2).type == TokenType.LPAREN)
         ):
             return self._parse_instance_stmt()
-        # Bare assignment: IDENT = expr; or IDENT[...] = expr;
+        # Bare assignment: IDENT = expr; or IDENT[...] = expr; or IDENT op= expr;
         if tok.type == TokenType.IDENT and (
             self.peek(1).type == TokenType.EQ
             or self.peek(1).type == TokenType.LE
             or self.peek(1).type == TokenType.LBRACK
+            or self.peek(1).type in _COMPOUND_OPS
         ):
             return self._parse_bare_assign_stmt()
         # Bare signal declaration without 'logic' keyword: ident ;
@@ -257,10 +351,20 @@ class Parser:
         return AssignStmt(self._loc(tok), target=target, value=value, is_nonblocking=is_nb)
 
     def _parse_bare_assign_stmt(self) -> AssignStmt:
-        """Parse a bare assignment without 'assign' keyword: IDENT = expr;"""
+        """Parse a bare assignment without 'assign' keyword: IDENT = expr; or IDENT op= expr;"""
         tok = self.peek()
         target = self._parse_lvalue()
         eq = self.advance()
+
+        # Compound assignment: desugar a += b → a = a + b
+        if eq.type in _COMPOUND_OPS:
+            base_op = _COMPOUND_OPS[eq.type]
+            value = self._parse_expr()
+            self.expect(TokenType.SEMICOLON)
+            lhs_expr = self._lvalue_to_expr(target)
+            expanded = BinaryExpr(self._loc(tok), base_op, lhs_expr, value)
+            return AssignStmt(self._loc(tok), target=target, value=expanded, is_nonblocking=False)
+
         if eq.type not in (TokenType.EQ, TokenType.LE):
             raise SlipSyntaxError(
                 self._filename, eq.line, eq.col,
@@ -270,6 +374,20 @@ class Parser:
         value = self._parse_expr()
         self.expect(TokenType.SEMICOLON)
         return AssignStmt(self._loc(tok), target=target, value=value, is_nonblocking=is_nb)
+
+    def _lvalue_to_expr(self, lv: LValue) -> Expr:
+        """Convert an LValue to the equivalent expression for desugaring.
+
+        Simple name → IdentExpr; indexed name → nested IndexExpr.
+        """
+        expr: Expr = IdentExpr(lv.loc, lv.name)
+        for idx in lv.indices:
+            if isinstance(idx, tuple):
+                # Range index: [high:low]
+                expr = IndexExpr(lv.loc, expr, idx[0], idx[1], is_slice=True)
+            else:
+                expr = IndexExpr(lv.loc, expr, idx)
+        return expr
 
     def _parse_lvalue(self) -> LValue:
         name_tok = self.expect(TokenType.IDENT)
@@ -313,6 +431,11 @@ class Parser:
         body = self._parse_block()
         return CombBlock(self._loc(tok), body=body)
 
+    def _parse_initial_block(self) -> InitialBlock:
+        tok = self.advance()  # consume 'initial'
+        body = self._parse_block()
+        return InitialBlock(self._loc(tok), body=body)
+
     def _parse_if_stmt(self) -> IfStmt:
         tok = self.advance()  # consume 'if'
         self.expect(TokenType.LPAREN)
@@ -334,9 +457,27 @@ class Parser:
         self.expect(TokenType.SEMICOLON)
         cond = self._parse_expr()
         self.expect(TokenType.SEMICOLON)
+        # Step: IDENT = expr | IDENT += expr | IDENT -= expr | IDENT++
+        step_loc = self._loc(self.peek())
         step_var_tok = self.expect(TokenType.IDENT)
-        self.expect(TokenType.EQ)
-        step = self._parse_expr()
+        step_tok = self.advance()
+        if step_tok.type == TokenType.EQ:
+            step = self._parse_expr()
+        elif step_tok.type in _COMPOUND_OPS:
+            base_op = _COMPOUND_OPS[step_tok.type]
+            rhs = self._parse_expr()
+            lhs = IdentExpr(step_loc, step_var_tok.value)
+            step = BinaryExpr(step_loc, base_op, lhs, rhs)
+        elif step_tok.type == TokenType.PLUS and self.peek().type == TokenType.PLUS:
+            self.advance()  # consume second +
+            lhs = IdentExpr(step_loc, step_var_tok.value)
+            rhs = IntLiteralExpr(step_loc, "1")
+            step = BinaryExpr(step_loc, "+", lhs, rhs)
+        else:
+            raise SlipSyntaxError(
+                self._filename, step_tok.line, step_tok.col,
+                f"expected '=', '+=', or '++' in for-loop step, got '{step_tok.value}'"
+            )
         self.expect(TokenType.RPAREN)
         body = self._parse_block()
         return ForStmt(
@@ -348,6 +489,39 @@ class Parser:
             step=step,
             body=body,
         )
+
+    def _parse_case_stmt(self) -> CaseStmt:
+        tok = self.advance()  # consume case/casez/casex
+        kind_map = {
+            TokenType.CASE: "case",
+            TokenType.CASEZ: "casez",
+            TokenType.CASEX: "casex",
+        }
+        kind = kind_map[tok.type]
+        self.expect(TokenType.LPAREN)
+        expr = self._parse_expr()
+        self.expect(TokenType.RPAREN)
+        self.expect(TokenType.LBRACE)
+
+        items: list[CaseItem] = []
+        while self.peek().type != TokenType.RBRACE:
+            if self.peek().type == TokenType.DEFAULT:
+                self.advance()
+                self.expect(TokenType.COLON)
+                body = self._parse_stmt_or_block()
+                items.append(CaseItem(self._loc(tok), patterns=(), body=body))
+            else:
+                patterns: list[Expr] = []
+                patterns.append(self._parse_expr())
+                while self.peek().type == TokenType.COMMA:
+                    self.advance()
+                    patterns.append(self._parse_expr())
+                self.expect(TokenType.COLON)
+                body = self._parse_stmt_or_block()
+                items.append(CaseItem(self._loc(tok), patterns=tuple(patterns), body=body))
+
+        self.expect(TokenType.RBRACE)
+        return CaseStmt(self._loc(tok), kind=kind, expr=expr, items=tuple(items))
 
     def _parse_gen_for_stmt(self) -> GenForStmt:
         tok = self.advance()  # consume `for

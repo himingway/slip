@@ -33,3 +33,15 @@ Thumbs.db
 
 # uv
 .python-version
+
+# LaTeX auxiliary files
+*.aux
+*.bcf
+*.log
+*.out
+*.run.xml
+*.toc
+*.synctex.gz
+*.fls
+*.fdb_latexmk
+texput.log

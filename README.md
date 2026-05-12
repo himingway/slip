@@ -16,12 +16,23 @@ Every Slip construct maps directly to a SystemVerilog equivalent. The generated 
 - **Implicit signal declarations** — referenced names that aren't ports or instances become `logic` signals automatically
 - **Sequential blocks** — `seq (clk, neg: rst_n) { ... }` generates `always_ff` with automatic blocking-to-nonblocking conversion
 - **Combinational blocks** — `comb { ... }` generates `always_comb`
+- **Initial blocks** — `initial { ... }` generates `initial begin ... end` for testbenches and initialization
+- **Procedural for loops** — `for` inside `seq`/`comb` blocks generates SV `for` statements, with `i++` and `i += expr` step support
+- **Case statements** — `case`/`casez`/`casex` with multi-pattern, default, and `?` wildcard support
+- **Inside operator** — `x inside {1, 2, 3}` for set membership testing
+- **Compound assignments** — `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`, `<<<=`, `>>>=` desugared at parse time
 - **Compile-time metaprogramming** — `` `for `` loops and `` `if `` conditionals with constant folding
-- **Template identifiers** — `` `for `` loop variables expand inside identifier names (e.g., `data_`i` → `data_0`)
+- **Template identifiers** — `` `for `` loop variables expand inside identifier names, including multi-variable names like `a`i_`j`
+- **Full operator set** — arithmetic shifts (`<<<`/`>>>`), exponentiation (`**`), case equality (`===`/`!==`), width cast (`8'(expr)`)
+- **Replication syntax** — `{4{1'b0}}` generates correct SystemVerilog replication
 - **Module instantiation** — concise syntax with same-name shorthand (`.clk`), explicit connections, and regex port mapping
 - **IP integration** — automatic port/parameter reflection of external SystemVerilog IP via pyslang
 - **Parameter and localparam** — module-level parameters with override, body-level localparams without
-- **Constant validation** — bare integers in port connections are rejected; use width-prefixed (`1'b0`) or fill constants (`'0`, `'1`)
+- **Multi-driver detection** — signals driven by multiple `seq`/`comb` blocks raise a compile error
+- **Combinational loop detection** — feedback loops inside `comb` blocks are detected and reported as errors
+- **Width mismatch warnings** — assignment and instance port width mismatches are reported as warnings
+- **Module topological sort** — modules are emitted in dependency order (definitions before instantiations)
+- **Constant validation** — bare integers in port connections are rejected; integer literal radix is validated
 - **Dangling port marker** — `.rst_n(_)` leaves a port intentionally unconnected
 
 ## Quick Example
@@ -143,6 +154,41 @@ comb {
 }
 ```
 
+### Case Statements
+
+```slip
+case (sel) {
+    2'b00: y = a;
+    2'b01: y = b;
+    2'b10, 2'b11: y = c;
+    default: y = 0;
+}
+
+// casez with ? wildcard
+casez (opcode) {
+    4'b1???: y = a;
+    4'b01??: y = b;
+    default: y = 0;
+}
+```
+
+### Inside Operator
+
+```slip
+if (state inside {IDLE, RUN, DONE}) {
+    // ...
+}
+```
+
+### Initial Blocks
+
+```slip
+initial {
+    clk = 0;
+    forever #5 clk = ~clk;
+}
+```
+
 ### Metaprogramming
 
 ```slip
@@ -172,7 +218,56 @@ inner u2 { .clk, .rst_n(_), .data };
 
 // Regex port mapping
 child u3 { .clk, "data_(.*)" => "prefix_\1" };
+
+// Multiple regex rules: first matching rule wins
+child u4 { .clk, "data_(.*)" => "bus_\1", "out_(.*)" => "result_\1" };
+
+// Regex functions: transform captured groups
+child u5 { .clk, "data_(.*)" => "bus_$upper(\1)" };     // uppercase
+child u6 { .clk, "ch_(.*)" => "port_$add(\1, 1)" };     // arithmetic
+child u7 { .clk, "a_(.*)" => "pre_$upper(\1)_post" };   // prefix + suffix
 ```
+
+**Regex Port Mapping Priority:**
+1. Explicit connections (highest priority)
+2. Same-name shorthand
+3. Regex patterns (processed in order, first match wins)
+
+**Built-in Regex Functions:**
+- String: `$upper`, `$lower`, `$reverse`, `$substr`, `$replace`, `$concat`
+- Arithmetic: `$add`, `$sub`, `$mul`, `$div`, `$mod`
+- Bit: `$bit_reverse`, `$bit_select`
+
+**Custom Functions (Python API):**
+```python
+from slip.semantic.regex_funcs import register
+
+def my_func(s: str) -> str:
+    return f"prefix_{s}"
+
+register("my_func", my_func)
+```
+Then use `$my_func(\1)` in Slip. Custom functions can override built-in ones.
+
+**Native Custom Functions (defun):**
+```slip
+defun prefix(s):
+    return "bus_" + s
+
+defun to_upper(s):
+    return s.upper()
+
+defun inc(n):
+    return n + 1
+
+child u1 {
+    .clk,
+    "data_(.*)" => "$prefix(\1)",
+    "name_(.*)" => "$to_upper(\1)",
+    "ch_(.*)" => "$inc(\1)"
+};
+```
+Supported: full Python expressions including string concatenation (`+`), string methods (`.upper()`, `.lower()`, `.reverse()`, `.replace()`, `.strip()`, `.split()`, `.startswith()`, etc.), arithmetic (`+`, `-`, `*`, `/`, `%`), method chaining, built-in functions (`len()`, `int()`, `str()`), indexing/slicing (`s[0]`, `s[1:3]`, `s[3:]`, `s[:3]`, `s[-1]`), ternary expressions.
 
 ### Special Constants
 
@@ -237,7 +332,7 @@ Source (.slip)
 
 1. **Lexer** — regex-based tokenizer with post-lex merging for compound tokens
 2. **Parser** — recursive-descent for statements, Pratt parser for expressions
-3. **Semantic Analysis** — metaprogramming expansion, symbol collection, driver analysis, assignment correction, IR building, instance resolution
+3. **Semantic Analysis** — metaprogramming expansion, symbol collection, driver analysis, combinational loop detection, assignment correction, width mismatch checking, IR building, instance resolution
 4. **Codegen** — IR-to-SystemVerilog emission with pyslang validation
 
 ## Running Tests

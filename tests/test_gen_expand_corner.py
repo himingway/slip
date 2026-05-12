@@ -79,7 +79,7 @@ class TestEvalUntestedOperators:
 
 class TestEvalUnsupportedOps:
     def test_unsupported_binary_op(self):
-        expr = BinaryExpr(LOC, "**", IntLiteralExpr(LOC, "2"), IntLiteralExpr(LOC, "3"))
+        expr = BinaryExpr(LOC, "??", IntLiteralExpr(LOC, "2"), IntLiteralExpr(LOC, "3"))
         with pytest.raises(SlipSemanticError, match="unsupported operator"):
             _eval_int(expr, {}, LOC)
 
@@ -121,7 +121,8 @@ class TestEvalTickIdentErrors:
 # ── _sub_expr: untested expression types ────────────────────────
 
 class TestSubExprCornerCases:
-    def test_sub_ternary_expr(self):
+    def test_sub_ternary_expr_folds_when_const(self):
+        # i=5 → condition folds to IntLiteralExpr("5") (truthy) → selects true_expr
         expr = TernaryExpr(
             LOC,
             cond=IdentExpr(LOC, "i"),
@@ -129,9 +130,21 @@ class TestSubExprCornerCases:
             false_expr=IntLiteralExpr(LOC, "0"),
         )
         result = _sub_expr(expr, "i", 5)
+        assert isinstance(result, IntLiteralExpr)
+        assert result.raw == "1"
+
+    def test_sub_ternary_expr_preserves_non_const(self):
+        # condition is IdentExpr("x") which is not the loop var → stays symbolic
+        expr = TernaryExpr(
+            LOC,
+            cond=IdentExpr(LOC, "x"),
+            true_expr=IdentExpr(LOC, "i"),
+            false_expr=IntLiteralExpr(LOC, "0"),
+        )
+        result = _sub_expr(expr, "i", 5)
         assert isinstance(result, TernaryExpr)
-        assert isinstance(result.cond, IntLiteralExpr)
-        assert result.cond.raw == "5"
+        assert isinstance(result.true_expr, IntLiteralExpr)
+        assert result.true_expr.raw == "5"
 
     def test_sub_replication_expr(self):
         expr = ReplicationExpr(
@@ -196,12 +209,19 @@ class TestSubExprCornerCases:
         assert isinstance(result.parts[0], IntLiteralExpr)
         assert result.parts[0].raw == "7"
 
-    def test_sub_paren_expr(self):
+    def test_sub_paren_expr_unwraps_literal(self):
+        # i=9 → inner folds to IntLiteralExpr("9") → paren unwrapped
         expr = ParenExpr(LOC, IdentExpr(LOC, "i"))
         result = _sub_expr(expr, "i", 9)
+        assert isinstance(result, IntLiteralExpr)
+        assert result.raw == "9"
+
+    def test_sub_paren_expr_preserves_non_literal(self):
+        # inner becomes a non-literal expression → paren kept
+        expr = ParenExpr(LOC, BinaryExpr(LOC, "+", IdentExpr(LOC, "i"), IdentExpr(LOC, "x")))
+        result = _sub_expr(expr, "i", 3)
         assert isinstance(result, ParenExpr)
-        assert isinstance(result.inner, IntLiteralExpr)
-        assert result.inner.raw == "9"
+        assert isinstance(result.inner, BinaryExpr)
 
     def test_sub_unknown_expr_passthrough(self):
         # Fallthrough: expression type not explicitly handled returns as-is

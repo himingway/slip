@@ -26,9 +26,12 @@ from slip.ast.module import Module
 from slip.ast.statements import (
     AssignStmt,
     BlockStmt,
+    CaseItem,
+    CaseStmt,
     CombBlock,
     ForStmt,
     IfStmt,
+    InitialBlock,
     LocalParamDecl,
     LValue,
     SeqBlock,
@@ -75,18 +78,31 @@ def _eval_int(expr: Expr, params: dict[str, int], loc: SourceLocation) -> int:
             )
         return params[expr.name]
     if isinstance(expr, BinaryExpr):
+        # Handle 'inside' operator: expr inside {set}
+        if expr.op == "inside":
+            left = _eval_int(expr.left, params, loc)
+            if isinstance(expr.right, ConcatExpr):
+                set_vals = [_eval_int(p, params, loc) for p in expr.right.parts]
+                return int(left in set_vals)
+            raise SlipSemanticError(
+                loc.file, loc.line, loc.col,
+                "inside operator requires a set literal {v1, v2, ...} on the right"
+            )
         left = _eval_int(expr.left, params, loc)
         right = _eval_int(expr.right, params, loc)
         ops: dict[str, int] = {
             "+": left + right, "-": left - right, "*": left * right,
             "/": left // right if right != 0 else 0,
             "%": left % right if right != 0 else 0,
+            "**": left ** right,
             "<": int(left < right), ">": int(left > right),
             "<=": int(left <= right), ">=": int(left >= right),
             "==": int(left == right), "!=": int(left != right),
+            "===": int(left == right), "!==": int(left != right),
             "&&": int(left and right), "||": int(left or right),
             "&": left & right, "|": left | right, "^": left ^ right,
             "<<": left << right, ">>": left >> right,
+            "<<<": left << right, ">>>": left >> right,
         }
         if expr.op not in ops:
             raise SlipSemanticError(
@@ -119,6 +135,57 @@ def _eval_int(expr: Expr, params: dict[str, int], loc: SourceLocation) -> int:
     )
 
 
+# ── Constant folding helpers ──
+
+def _int_val(expr: IntLiteralExpr) -> int | None:
+    try:
+        return _parse_int_literal(expr.raw)
+    except ValueError:
+        return None
+
+
+def _try_fold_binary(loc: SourceLocation, op: str, left: Expr, right: Expr) -> Expr:
+    if isinstance(left, IntLiteralExpr) and isinstance(right, IntLiteralExpr):
+        try:
+            result = _eval_int(BinaryExpr(loc, op, left, right), {}, loc)
+            return IntLiteralExpr(loc, raw=str(result))
+        except SlipSemanticError:
+            pass
+    if isinstance(right, IntLiteralExpr):
+        rv = _int_val(right)
+        if rv is not None:
+            if op == "+" and rv == 0:
+                return left
+            if op == "-" and rv == 0:
+                return left
+            if op == "*" and rv == 1:
+                return left
+            if op == "*" and rv == 0:
+                return IntLiteralExpr(loc, raw="0")
+            if op == "/" and rv == 1:
+                return left
+    if isinstance(left, IntLiteralExpr):
+        lv = _int_val(left)
+        if lv is not None:
+            if op == "+" and lv == 0:
+                return right
+            if op == "*" and lv == 1:
+                return right
+            if op == "*" and lv == 0:
+                return IntLiteralExpr(loc, raw="0")
+    return BinaryExpr(loc, op, left, right)
+
+
+def _try_fold_unary(loc: SourceLocation, op: str, operand: Expr, prefix: bool) -> Expr:
+    if isinstance(operand, IntLiteralExpr):
+        try:
+            result = _eval_int(UnaryExpr(loc, op, operand, prefix), {}, loc)
+            return IntLiteralExpr(loc, raw=str(result))
+        except SlipSemanticError:
+            pass
+    return UnaryExpr(loc, op, operand, prefix)
+
+
 # ── Substitution: deep-copy with loop var replaced by int literal ──
 
 def _sub_name(name: str, var: str, val: int) -> str:
@@ -133,6 +200,9 @@ def _sub_expr(expr: Expr, var: str, val: int) -> Expr:
     if isinstance(expr, IdentExpr):
         if expr.name == var:
             return IntLiteralExpr(expr.loc, raw=str(val))
+        new_name = _sub_name(expr.name, var, val)
+        if new_name != expr.name:
+            return IdentExpr(expr.loc, name=new_name)
         return expr
     if isinstance(expr, TickIdentExpr):
         if expr.name == var:
@@ -141,23 +211,28 @@ def _sub_expr(expr: Expr, var: str, val: int) -> Expr:
     if isinstance(expr, IntLiteralExpr):
         return expr
     if isinstance(expr, BinaryExpr):
-        return BinaryExpr(expr.loc, op=expr.op,
-                          left=_sub_expr(expr.left, var, val),
-                          right=_sub_expr(expr.right, var, val))
+        left = _sub_expr(expr.left, var, val)
+        right = _sub_expr(expr.right, var, val)
+        return _try_fold_binary(expr.loc, expr.op, left, right)
     if isinstance(expr, UnaryExpr):
-        return UnaryExpr(expr.loc, op=expr.op,
-                         operand=_sub_expr(expr.operand, var, val),
-                         prefix=expr.prefix)
+        operand = _sub_expr(expr.operand, var, val)
+        return _try_fold_unary(expr.loc, expr.op, operand, expr.prefix)
     if isinstance(expr, TernaryExpr):
-        return TernaryExpr(expr.loc,
-                           cond=_sub_expr(expr.cond, var, val),
-                           true_expr=_sub_expr(expr.true_expr, var, val),
-                           false_expr=_sub_expr(expr.false_expr, var, val))
+        cond = _sub_expr(expr.cond, var, val)
+        true_expr = _sub_expr(expr.true_expr, var, val)
+        false_expr = _sub_expr(expr.false_expr, var, val)
+        if isinstance(cond, IntLiteralExpr):
+            cv = _int_val(cond)
+            if cv is not None:
+                return true_expr if cv else false_expr
+        return TernaryExpr(expr.loc, cond=cond,
+                           true_expr=true_expr, false_expr=false_expr)
     if isinstance(expr, IndexExpr):
         return IndexExpr(expr.loc,
                          base=_sub_expr(expr.base, var, val),
-                         index=_sub_expr(expr.index, var, val),
-                         high=_sub_expr(expr.high, var, val) if expr.high else None)
+                         index=_sub_expr(expr.index, var, val) if expr.index is not None else None,
+                         high=_sub_expr(expr.high, var, val) if expr.high is not None else None,
+                         is_slice=expr.is_slice)
     if isinstance(expr, ConcatExpr):
         return ConcatExpr(expr.loc,
                           parts=tuple(_sub_expr(p, var, val) for p in expr.parts))
@@ -172,7 +247,10 @@ def _sub_expr(expr: Expr, var: str, val: int) -> Expr:
         return CallExpr(expr.loc, func=expr.func,
                         args=tuple(_sub_expr(a, var, val) for a in expr.args))
     if isinstance(expr, ParenExpr):
-        return ParenExpr(expr.loc, inner=_sub_expr(expr.inner, var, val))
+        inner = _sub_expr(expr.inner, var, val)
+        if isinstance(inner, IntLiteralExpr):
+            return inner
+        return ParenExpr(expr.loc, inner=inner)
     if isinstance(expr, StringLiteralExpr):
         return expr
     if isinstance(expr, TickConstExpr):
@@ -210,6 +288,8 @@ def _sub_stmt(stmt: Statement, var: str, val: int) -> Statement:
                         body=_sub_block(stmt.body, var, val))
     if isinstance(stmt, CombBlock):
         return CombBlock(stmt.loc, body=_sub_block(stmt.body, var, val))
+    if isinstance(stmt, InitialBlock):
+        return InitialBlock(stmt.loc, body=_sub_block(stmt.body, var, val))
     if isinstance(stmt, IfStmt):
         return IfStmt(stmt.loc,
                       cond=_sub_expr(stmt.cond, var, val),
@@ -222,6 +302,16 @@ def _sub_stmt(stmt: Statement, var: str, val: int) -> Statement:
                        step_var=stmt.step_var,
                        step=_sub_expr(stmt.step, var, val),
                        body=_sub_block(stmt.body, var, val))
+    if isinstance(stmt, CaseStmt):
+        new_items = tuple(
+            CaseItem(ci.loc,
+                     patterns=tuple(_sub_expr(p, var, val) for p in ci.patterns),
+                     body=_sub_block(ci.body, var, val))
+            for ci in stmt.items
+        )
+        return CaseStmt(stmt.loc, kind=stmt.kind,
+                        expr=_sub_expr(stmt.expr, var, val),
+                        items=new_items)
     if isinstance(stmt, InstanceStmt):
         new_params = tuple(
             NamedParam(np.loc, name=np.name, value=_sub_expr(np.value, var, val))
@@ -230,9 +320,12 @@ def _sub_stmt(stmt: Statement, var: str, val: int) -> Statement:
         new_conns = []
         for c in stmt.connections:
             new_signal = _sub_expr(c.signal, var, val) if c.signal else None
-            new_conns.append(Connection(c.loc, port=c.port, signal=new_signal,
-                                        port_regex=c.port_regex, signal_regex=c.signal_regex))
-        return InstanceStmt(stmt.loc, module_name=stmt.module_name,
+            new_port = _sub_name(c.port, var, val) if c.port else None
+            new_port_re = _sub_name(c.port_regex, var, val) if c.port_regex else None
+            new_sig_re = _sub_name(c.signal_regex, var, val) if c.signal_regex else None
+            new_conns.append(Connection(c.loc, port=new_port, signal=new_signal,
+                                        port_regex=new_port_re, signal_regex=new_sig_re))
+        return InstanceStmt(stmt.loc, module_name=_sub_name(stmt.module_name, var, val),
                             params=new_params, inst_name=_sub_name(stmt.inst_name, var, val),
                             connections=tuple(new_conns))
     if isinstance(stmt, BlockStmt):
@@ -240,6 +333,18 @@ def _sub_stmt(stmt: Statement, var: str, val: int) -> Statement:
     if isinstance(stmt, LocalParamDecl):
         return LocalParamDecl(stmt.loc, name=stmt.name,
                               value=_sub_expr(stmt.value, var, val))
+    if isinstance(stmt, GenForStmt):
+        return GenForStmt(stmt.loc, var=stmt.var,
+                          init=_sub_expr(stmt.init, var, val),
+                          cond=_sub_expr(stmt.cond, var, val),
+                          step_var=stmt.step_var,
+                          step=_sub_expr(stmt.step, var, val),
+                          body=_sub_block(stmt.body, var, val))
+    if isinstance(stmt, GenIfStmt):
+        return GenIfStmt(stmt.loc,
+                         cond=_sub_expr(stmt.cond, var, val),
+                         then_body=_sub_block(stmt.then_body, var, val),
+                         else_body=_sub_block(stmt.else_body, var, val) if stmt.else_body else None)
     return stmt
 
 
@@ -318,6 +423,11 @@ def _expand_stmt(stmt: Statement, params: dict[str, int]) -> list[Statement]:
         for s in stmt.body.statements:
             new_body.extend(_expand_stmt(s, params))
         return [CombBlock(stmt.loc, body=BlockStmt(stmt.body.loc, statements=tuple(new_body)))]
+    if isinstance(stmt, InitialBlock):
+        new_body = []
+        for s in stmt.body.statements:
+            new_body.extend(_expand_stmt(s, params))
+        return [InitialBlock(stmt.loc, body=BlockStmt(stmt.body.loc, statements=tuple(new_body)))]
     if isinstance(stmt, IfStmt):
         new_then = []
         for s in stmt.then_body.statements:
@@ -338,6 +448,17 @@ def _expand_stmt(stmt: Statement, params: dict[str, int]) -> list[Statement]:
         return [ForStmt(stmt.loc, var=stmt.var, init=stmt.init, cond=stmt.cond,
                         step_var=stmt.step_var, step=stmt.step,
                         body=BlockStmt(stmt.body.loc, statements=tuple(new_body)))]
+    if isinstance(stmt, CaseStmt):
+        new_items = []
+        for ci in stmt.items:
+            new_ci_body = []
+            for s in ci.body.statements:
+                new_ci_body.extend(_expand_stmt(s, params))
+            new_items.append(CaseItem(ci.loc, patterns=ci.patterns,
+                                       body=BlockStmt(ci.body.loc,
+                                                       statements=tuple(new_ci_body))))
+        return [CaseStmt(stmt.loc, kind=stmt.kind, expr=stmt.expr,
+                         items=tuple(new_items))]
     return [stmt]
 
 

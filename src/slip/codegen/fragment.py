@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from slip.ir import (
     HDLAssignment,
+    HDLCaseBlock,
+    HDLCaseItem,
+    HDLForLoop,
     HDLIfBlock,
     HDLInstance,
     HDLModule,
@@ -12,105 +15,172 @@ from slip.ir import (
 )
 
 
+class IndentationManager:
+    """Manages indentation levels for HDL code generation."""
+    
+    def __init__(self, base_indent: int = 4, base_level: int = 1):
+        self.base_indent = base_indent
+        self.level = base_level
+    
+    def indent(self) -> str:
+        """Return current indentation string."""
+        return " " * (self.base_indent * self.level)
+    
+    def increase(self) -> None:
+        """Increase indentation level."""
+        self.level += 1
+    
+    def decrease(self) -> None:
+        """Decrease indentation level."""
+        self.level = max(0, self.level - 1)
+    
+    def reset(self) -> None:
+        """Reset indentation to base level."""
+        self.level = 0
+
+
 def localparam_decl(p: HDLParam) -> str:
-    return f"    localparam {p.name} = {p.default};"
+    indent = IndentationManager()
+    return f"{indent.indent()}localparam {p.name} = {p.default};"
 
 
 def module_header(mod: HDLModule) -> str:
-    parts = [f"module {mod.name}"]
+    indent = IndentationManager(base_level=0)
+    header = f"module {mod.name}"
 
     # Parameters
     if mod.params:
-        parts.append(" #(")
         param_lines = []
+        indent.increase()
         for i, p in enumerate(mod.params):
             comma = "," if i < len(mod.params) - 1 else ""
-            param_lines.append(f"    parameter {p.name} = {p.default}{comma}")
-        parts.append("\n".join(param_lines))
-        parts.append(")")
+            param_lines.append(f"{indent.indent()}parameter {p.name} = {p.default}{comma}")
+        indent.decrease()
+        header += " #(\n" + "\n".join(param_lines) + "\n)"
 
     # Ports
     if mod.ports:
-        parts.append(" (")
         port_lines = []
+        indent.increase()
         for i, p in enumerate(mod.ports):
             comma = "," if i < len(mod.ports) - 1 else ""
-            port_lines.append(f"    {p.decl_sv()}{comma}")
-        parts.append("\n".join(port_lines))
-        parts.append(")")
+            port_lines.append(f"{indent.indent()}{p.decl_sv()}{comma}")
+        indent.decrease()
+        header += " (\n" + "\n".join(port_lines) + "\n)"
 
-    parts.append(";")
-    return "\n".join(parts)
+    header += ";"
+    return header
 
 
 def signal_decl(sig: HDLSignal) -> str:
-    return f"    {sig.decl_sv()}"
+    indent = IndentationManager()
+    return f"{indent.indent()}{sig.decl_sv()}"
 
 
 def assign_stmt(a: HDLAssignment) -> str:
+    indent = IndentationManager()
     if a.is_nonblocking:
-        return f"    assign {a.target} <= {a.value};"
-    return f"    assign {a.target} = {a.value};"
+        return f"{indent.indent()}assign {a.target} <= {a.value};"
+    return f"{indent.indent()}assign {a.target} = {a.value};"
 
 
 def logic_block(block: LogicBlock) -> str:
+    indent = IndentationManager()
+    
     if block.kind == "always_comb":
-        lines = ["    always_comb begin"]
+        lines = [f"{indent.indent()}always_comb begin"]
+    elif block.kind == "always_latch":
+        lines = [f"{indent.indent()}always_latch begin"]
+    elif block.kind == "initial":
+        lines = [f"{indent.indent()}initial begin"]
     else:
-        lines = [f"    {block.kind} @({block.sensitivity}) begin"]
+        lines = [f"{indent.indent()}{block.kind} @({block.sensitivity}) begin"]
+    
+    indent.increase()
     for item in block.body:
-        lines.extend(_emit_block_item(item, indent=2))
-    lines.append("    end")
+        lines.extend(_emit_block_item(item, indent))
+    indent.decrease()
+    lines.append(f"{indent.indent()}end")
+    
     return "\n".join(lines)
 
 
 def instance(inst: HDLInstance) -> str:
-    parts = [f"    {inst.target}"]
+    indent = IndentationManager()
+    line = f"{indent.indent()}{inst.target}"
 
     # Parameters
     if inst.param_map:
         param_parts = []
+        indent.increase()
         for i, (name, val) in enumerate(inst.param_map):
             comma = "," if i < len(inst.param_map) - 1 else ""
-            param_parts.append(f"        .{name}({val}){comma}")
-        parts.append(" #(")
-        parts.append("\n".join(param_parts))
-        parts.append(")")
+            param_parts.append(f"{indent.indent()}.{name}({val}){comma}")
+        indent.decrease()
+        line += " #(\n" + "\n".join(param_parts) + f"\n{indent.indent()})"
 
-    parts.append(f" {inst.inst_name}")
+    line += f" {inst.inst_name}"
 
     # Port connections
     if inst.port_map:
         visible = [(port, sig) for port, sig in inst.port_map if sig != "_"]
         port_parts = []
+        indent.increase()
         for i, (port, sig) in enumerate(visible):
             comma = "," if i < len(visible) - 1 else ""
-            port_parts.append(f"        .{port}({sig}){comma}")
-        parts.append(" (")
-        parts.append("\n".join(port_parts))
-        parts.append(")")
+            port_parts.append(f"{indent.indent()}.{port}({sig}){comma}")
+        indent.decrease()
+        line += " (\n" + "\n".join(port_parts) + f"\n{indent.indent()})"
 
-    parts.append(";")
-    return "\n".join(parts)
+    line += ";"
+    return line
 
 
 def module_footer() -> str:
     return "endmodule"
 
 
-def _emit_block_item(item: object, indent: int = 2) -> list[str]:
-    prefix = "    " * indent
+def _emit_block_item(item: object, indent: IndentationManager) -> list[str]:
     if isinstance(item, HDLAssignment):
         op = "<=" if item.is_nonblocking else "="
-        return [f"{prefix}{item.target} {op} {item.value};"]
+        return [f"{indent.indent()}{item.target} {op} {item.value};"]
     if isinstance(item, HDLIfBlock):
-        lines = [f"{prefix}if ({item.cond}) begin"]
+        lines = [f"{indent.indent()}if ({item.cond}) begin"]
+        indent.increase()
         for sub in item.then_body:
-            lines.extend(_emit_block_item(sub, indent + 1))
+            lines.extend(_emit_block_item(sub, indent))
+        indent.decrease()
         if item.else_body:
-            lines.append(f"{prefix}end else begin")
+            lines.append(f"{indent.indent()}end else begin")
+            indent.increase()
             for sub in item.else_body:
-                lines.extend(_emit_block_item(sub, indent + 1))
-        lines.append(f"{prefix}end")
+                lines.extend(_emit_block_item(sub, indent))
+            indent.decrease()
+        lines.append(f"{indent.indent()}end")
+        return lines
+    if isinstance(item, HDLForLoop):
+        lines = [f"{indent.indent()}for (int {item.init}; {item.cond}; {item.step}) begin"]
+        indent.increase()
+        for sub in item.body:
+            lines.extend(_emit_block_item(sub, indent))
+        indent.decrease()
+        lines.append(f"{indent.indent()}end")
+        return lines
+    if isinstance(item, HDLCaseBlock):
+        lines = [f"{indent.indent()}{item.kind} ({item.expr})"]
+        indent.increase()
+        for ci in item.items:
+            if ci.patterns:
+                pat_str = ", ".join(ci.patterns)
+                lines.append(f"{indent.indent()}{pat_str}: begin")
+            else:
+                lines.append(f"{indent.indent()}default: begin")
+            indent.increase()
+            for sub in ci.body:
+                lines.extend(_emit_block_item(sub, indent))
+            indent.decrease()
+            lines.append(f"{indent.indent()}end")
+        indent.decrease()
+        lines.append(f"{indent.indent()}endcase")
         return lines
     return []

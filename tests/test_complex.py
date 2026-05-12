@@ -209,8 +209,8 @@ class TestExprRoundTrip:
     def _roundtrip(self, expr_src: str) -> str:
         source = f"module m (y) {{ assign y = {expr_src}; }}"
         tokens = Lexer(source).tokenize()
-        modules = Parser(tokens).parse()
-        assign = modules[0].body[0]
+        unit = Parser(tokens).parse()
+        assign = unit.modules[0].body[0]
         return expr_to_sv(assign.value)
 
     def test_ident(self):
@@ -436,8 +436,8 @@ class TestMultiModule:
 class TestASTStructure:
     def _get_expr(self, source: str):
         tokens = Lexer(source, "test.slip").tokenize()
-        modules = Parser(tokens, "test.slip").parse()
-        assign = modules[0].body[0]
+        unit = Parser(tokens, "test.slip").parse()
+        assign = unit.modules[0].body[0]
         return assign.value
 
     def test_add_is_binary(self):

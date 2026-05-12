@@ -307,3 +307,161 @@ class TestGenCLI:
     def test_check_gen_for(self):
         from slip.cli._pipeline import run_check
         run_check(FIXTURES / "gen_for.slip", [])
+
+
+# ────────────────────────────────────────────────────────────────
+# Constant folding
+# ────────────────────────────────────────────────────────────────
+
+class TestConstantFolding:
+    def test_fold_subtraction_with_zero(self):
+        # W - `i - 1 when i=0 → should produce "W - 1" not "W - 0 - 1"
+        sv = compile_source(
+            "module m #(param W = 8) (y) { "
+            "logic [W-1:0] y; "
+            "`for (`i = 0; `i < 1; `i = `i + 1) { "
+            "assign y = y >> (W - 1 - `i); "
+            "} }"
+        )
+        text = sv["m"]
+        assert "- 0" not in text
+        assert "- 1" in text
+
+    def test_fold_multiplication(self):
+        # `i * 2 when i=3 → should produce "6"
+        sv = compile_source(
+            "module m (y) { "
+            "`for (`i = 3; `i < 4; `i = `i + 1) { "
+            "assign y = `i * 2; "
+            "} }"
+        )
+        text = sv["m"]
+        assert "6" in text
+
+    def test_fold_addition(self):
+        # `i + 1 when i=3 → should produce "4"
+        sv = compile_source(
+            "module m (y) { "
+            "`for (`i = 3; `i < 4; `i = `i + 1) { "
+            "assign y = `i + 1; "
+            "} }"
+        )
+        text = sv["m"]
+        assert "4" in text
+
+    def test_fold_index(self):
+        # data[`i] when i=3 → should produce "data[3]"
+        sv = compile_source(
+            "module m (y) { "
+            "logic [7:0] data_0; logic [7:0] data_1; "
+            "logic [7:0] data_2; logic [7:0] data_3; "
+            "`for (`i = 0; `i < 4; `i = `i + 1) { "
+            "assign data_`i = `i; "
+            "} "
+            "assign y = data_3; "
+            "} "
+        )
+        text = sv["m"]
+        assert "data_3" in text
+
+    @pytest.mark.parametrize("width", [4, 8, 16])
+    def test_fold_pipeline_param_width(self, width):
+        # W - 1 - `i: when i=0 → W - 1, when i=1 → W - 2
+        src = (
+            "module m #(param W = " + str(width) + ") (y) { "
+            "logic [W-1:0] y; "
+            "`for (`i = 0; `i < 2; `i = `i + 1) { "
+            "assign y = y >> (W - 1 - `i); "
+            "} }"
+        )
+        sv = compile_source(src)
+        text = sv["m"]
+        assert "- 0" not in text
+
+
+# ────────────────────────────────────────────────────────────────
+# Template identifiers in instance names and connections
+# ────────────────────────────────────────────────────────────────
+
+class TestTemplateIdentInInstances:
+    def test_instance_name_expansion(self):
+        """u_stage_`i should expand to u_stage_0, u_stage_1, etc."""
+        src = (
+            "module inner (clk, data) { logic clk; logic data; } "
+            "module m (clk) { "
+            "logic clk; "
+            "`for (`i = 0; `i < 3; `i = `i + 1) { "
+            "inner u_stage_`i { .clk, .data(_) }; "
+            "} }"
+        )
+        sv = compile_source(src)
+        text = sv["m"]
+        assert "u_stage_0" in text
+        assert "u_stage_1" in text
+        assert "u_stage_2" in text
+
+    def test_instance_connection_expansion(self):
+        """sd_`i in connections should expand to sd_0, sd_1, etc."""
+        src = (
+            "module inner (clk, data_out) { logic clk; logic data_out; } "
+            "module m (clk, dout) { "
+            "logic clk; logic [7:0] dout; "
+            "`for (`i = 0; `i < 3; `i = `i + 1) { "
+            "logic [7:0] sd_`i; "
+            "inner u_`i { .clk, .data_out(sd_`i) }; "
+            "} "
+            "assign dout = sd_2; "
+            "}"
+        )
+        sv = compile_source(src)
+        text = sv["m"]
+        assert "sd_0" in text
+        assert "sd_1" in text
+        assert "sd_2" in text
+        assert "data_out(sd_0)" in text
+        assert "data_out(sd_1)" in text
+        assert "data_out(sd_2)" in text
+
+    def test_template_ident_multi_var(self):
+        """a`i_`j should expand correctly for nested loops."""
+        src = (
+            "module inner (clk, data) { logic clk; logic data; } "
+            "module m (clk) { "
+            "logic clk; "
+            "`for (`i = 0; `i < 2; `i = `i + 1) { "
+            "`for (`j = 0; `j < 2; `j = `j + 1) { "
+            "inner u_`i_`j { .clk, .data(_) }; "
+            "} } }"
+        )
+        sv = compile_source(src)
+        text = sv["m"]
+        assert "u_0_0" in text
+        assert "u_0_1" in text
+        assert "u_1_0" in text
+        assert "u_1_1" in text
+
+    def test_regex_mapping_with_template_var(self):
+        """Regex replacement string with `i should be expanded per iteration."""
+        src = (
+            "module inner (clk, data_in, data_out) { "
+            "logic clk; logic [7:0] data_in; logic [7:0] data_out; } "
+            "module m (clk) { "
+            "logic clk; "
+            "`for (`i = 0; `i < 3; `i = `i + 1) { "
+            "logic [7:0] bus_`i_in; logic [7:0] bus_`i_out; "
+            "inner u_`i { .clk, \"data_(.*)\" => \"bus_`i_\\1\" }; "
+            "} }"
+        )
+        sv = compile_source(src)
+        text = sv["m"]
+        # Each instance should get its own bus_N_in / bus_N_out
+        assert "bus_0_in" in text
+        assert "bus_0_out" in text
+        assert "bus_1_in" in text
+        assert "bus_1_out" in text
+        assert "bus_2_in" in text
+        assert "bus_2_out" in text
+        # All instances should be present
+        assert "u_0" in text
+        assert "u_1" in text
+        assert "u_2" in text

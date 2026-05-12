@@ -1,0 +1,2197 @@
+\documentclass[lang=en,11pt]{elegantbook}
+
+% ── Packages ──
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{tabularx}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{caption}
+\usepackage{enumitem}
+
+% ── Colors ──
+\definecolor{slipkw}{RGB}{0,0,180}
+\definecolor{sliptick}{RGB}{0,128,128}
+\definecolor{svkw}{RGB}{0,0,180}
+\definecolor{codegreen}{RGB}{80,120,80}
+\definecolor{codegray}{RGB}{120,120,120}
+\definecolor{codebg}{RGB}{248,248,248}
+
+% ── Slip language definition ──
+\lstdefinelanguage{Slip}{
+  keywords={module,param,localparam,logic,signed,assign,seq,comb,initial,
+            pos,neg,if,else,for,case,casez,casex,default,inside,begin,end},
+  sensitive=true,
+  morecomment=[l]{//},
+  morecomment=[s]{/*}{*/},
+  morestring=[b]",
+  literate={`for}{{\textcolor{sliptick}{\textbf{`for}}}}{4}
+           {`if}{{\textcolor{sliptick}{\textbf{`if}}}}{3}
+           {`else}{{\textcolor{sliptick}{\textbf{`else}}}}{5}
+           {`i}{{\textcolor{sliptick}{\textbf{`i}}}}{2}
+           {`j}{{\textcolor{sliptick}{\textbf{`j}}}}{2},
+}
+
+% ── SystemVerilog language definition ──
+\lstdefinelanguage{SystemVerilog}{
+  keywords={module,endmodule,input,output,inout,logic,wire,reg,
+            always_ff,always_comb,always_latch,begin,end,
+            if,else,for,parameter,localparam,assign,
+            posedge,negedge,generate,endgenerate,genvar,
+            case,endcase,default,initial,integer},
+  sensitive=true,
+  morecomment=[l]{//},
+  morecomment=[s]{/*}{*/},
+  morestring=[b]",
+}
+
+% ── Listings global style ──
+\lstset{
+  basicstyle=\ttfamily\footnotesize,
+  keywordstyle=\color{slipkw}\bfseries,
+  keywordstyle=[2]\color{sliptick}\bfseries,
+  commentstyle=\color{codegray}\itshape,
+  stringstyle=\color{codegreen},
+  backgroundcolor=\color{codebg},
+  numbers=none,
+  frame=single,
+  rulecolor=\color{gray!40},
+  framerule=0.4pt,
+  breaklines=true,
+  showstringspaces=false,
+  tabsize=4,
+  xleftmargin=2pt,
+  xrightmargin=2pt,
+  aboveskip=8pt,
+  belowskip=4pt,
+}
+
+% ── Inline code shorthand ──
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\slipinline}[1]{\lstinline[language=Slip]|#1|}
+\newcommand{\svinline}[1]{\lstinline[language=SystemVerilog]|#1|}
+
+% ── Disable first-line indent (English typesetting) ──
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{6pt}
+
+% ── Title metadata ──
+\title{Slip User Manual}
+\subtitle{A Minimal HDL DSL Compiler}
+\author{Slip Project}
+\date{May 2026}
+\version{1.0}
+
+\begin{document}
+
+\maketitle
+\frontmatter
+\tableofcontents
+\mainmatter
+
+% ════════════════════════════════════════════════════════════════════
+% Part I: Getting Started
+% ════════════════════════════════════════════════════════════════════
+
+\chapter{Introduction}
+
+Slip is a minimal hardware description language (DSL) that compiles \code{.slip} source files into synthesizable SystemVerilog. It is designed as syntactic sugar over SystemVerilog, providing a streamlined syntax for common hardware design patterns while generating clean, human-readable, IEEE 1800-2017 compliant output.
+
+\section{Design Philosophy}
+
+\begin{itemize}
+  \item \textbf{Minimal syntax} --- port directions, signal types, and instance wiring are inferred from context.
+  \item \textbf{Direct mapping} --- every Slip construct maps 1:1 to a SystemVerilog equivalent.
+  \item \textbf{Compile-time metaprogramming} --- \slipinline{`for} loops and \slipinline{`if} conditionals are fully expanded before code generation, with automatic constant folding.
+  \item \textbf{Validated output} --- generated SystemVerilog is checked against the IEEE 1800-2017 standard via \href{https://github.com/MikePopoloski/slang}{pyslang}.
+\end{itemize}
+
+% ──────────────────────────────────────────────────────────────────
+\chapter{Installation}
+% ──────────────────────────────────────────────────────────────────
+
+\section{Prerequisites}
+
+\begin{itemize}
+  \item Python $\geq$ 3.10
+  \item \href{https://github.com/astral-sh/uv}{uv} (recommended) or pip
+\end{itemize}
+
+\section{Install with uv}
+
+\begin{lstlisting}[language=bash]
+git clone https://github.com/user/slip.git
+cd slip
+uv sync
+\end{lstlisting}
+
+\section{Install with pip}
+
+\begin{lstlisting}[language=bash]
+git clone https://github.com/user/slip.git
+cd slip
+pip install -e .
+\end{lstlisting}
+
+% ──────────────────────────────────────────────────────────────────
+\chapter{Command Line Interface}
+% ──────────────────────────────────────────────────────────────────
+
+\section{\code{slip build} --- Compile to SystemVerilog}
+
+\begin{lstlisting}[language=bash]
+slip build <file.slip>                        # output to ./build/
+slip build -o <out_dir> <file.slip>           # custom output directory
+slip build -ip <ip_dir> <file.slip>           # include external IP directory
+slip build -ip <dir1> -ip <dir2> <file.slip>  # multiple IP directories
+\end{lstlisting}
+
+Each module in the \code{.slip} file generates a separate \code{.sv} file in the output directory.
+
+\section{\code{slip check} --- Validate without generating output}
+
+\begin{lstlisting}[language=bash]
+slip check <file.slip>                        # validate only
+slip check -ip <ip_dir> <file.slip>           # with IP directory
+\end{lstlisting}
+
+Runs the full compilation pipeline (parsing, semantic analysis, code generation) but discards the output. Useful for CI validation.
+
+% ════════════════════════════════════════════════════════════════════
+% Part II: Language Reference
+% ════════════════════════════════════════════════════════════════════
+
+\chapter{Language Overview}
+
+A Slip source file contains one or more module declarations. Comments use \code{//} (line) or \code{/* */} (block) syntax.
+
+\begin{lstlisting}[language=Slip]
+// This is a comment
+module AND_gate (a, b, y) {
+    logic a;
+    logic b;
+    logic y;
+    assign y = a & b;
+}
+\end{lstlisting}
+
+Generates:
+
+\begin{lstlisting}[language=SystemVerilog]
+module AND_gate (
+    input logic a,
+    input logic b,
+    output logic y
+);
+
+    assign y = a & b;
+
+endmodule
+\end{lstlisting}
+
+\section{Key Differences from SystemVerilog}
+
+\begin{itemize}
+  \item No \svinline{input}/\svinline{output} keywords --- port directions are inferred.
+  \item No \svinline{wire}/\svinline{reg} --- everything is \svinline{logic}.
+  \item Blocking assignment in \code{seq} blocks is automatically converted to non-blocking.
+  \item Compile-time metaprogramming via \slipinline{`for} and \slipinline{`if}.
+  \item Template identifiers embed loop variables in signal names (e.g., \code{data\_`i}).
+\end{itemize}
+
+% ──────────────────────────────────────────────────────────────────
+\chapter{Module Declaration}
+% ──────────────────────────────────────────────────────────────────
+
+\section{Basic Syntax}
+
+\begin{lstlisting}[language=Slip]
+module <name> (port1, port2, ...) {
+    // body
+}
+\end{lstlisting}
+
+\section{With Parameters}
+
+\begin{lstlisting}[language=Slip]
+module <name> #(param W = 8, param DEPTH = 16) (port1, port2, ...) {
+    // body
+}
+\end{lstlisting}
+
+\section{Implicit Ports}
+
+If the port list is omitted entirely, all identifiers used in the module body that are not declared internally become ports:
+
+\begin{lstlisting}[language=Slip]
+module passthrough {
+    assign out = in;
+}
+\end{lstlisting}
+
+Generates:
+
+\begin{lstlisting}[language=SystemVerilog]
+module passthrough (
+    input logic in,
+    output logic out
+);
+
+    assign out = in;
+
+endmodule
+\end{lstlisting}
+
+Port directions are inferred from usage (see Chapter~\ref{ch:port-inference}).
+
+% ──────────────────────────────────────────────────────────────────
+\chapter{Parameters and Localparams}
+% ──────────────────────────────────────────────────────────────────
+
+\section{Parameters (\code{param})}
+
+Parameters are declared in the module header and can be overridden during instantiation:
+
+\begin{lstlisting}[language=Slip]
+module counter #(param WIDTH = 8, param MAX = 255) (clk, rst_n, count) {
+    logic clk;
+    logic rst_n;
+    logic [WIDTH-1:0] count;
+
+    seq (clk, neg: rst_n) {
+        if (!rst_n) {
+            count <= 0;
+        } else if (count == MAX) {
+            count <= 0;
+        } else {
+            count <= count + 1;
+        }
+    }
+}
+\end{lstlisting}
+
+Generates:
+
+\begin{lstlisting}[language=SystemVerilog]
+module counter #(
+    parameter WIDTH = 8,
+    parameter MAX = 255
+) (
+    input logic clk,
+    input logic rst_n,
+    output logic [WIDTH - 1:0] count
+);
+
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            count <= 0;
+        end else begin
+            if (count == MAX) begin
+                count <= 0;
+            end else begin
+                count <= count + 1;
+            end
+        end
+    end
+
+endmodule
+\end{lstlisting}
+
+Override at instantiation:
+
+\begin{lstlisting}[language=Slip]
+module top (clk, rst_n, count) {
+    logic clk;
+    logic rst_n;
+    logic [15:0] count;
+    counter #(.WIDTH(16), .MAX(65535)) u_cnt { .clk, .rst_n, .count };
+}
+\end{lstlisting}
+
+Generates:
+
+\begin{lstlisting}[language=SystemVerilog]
+module top (
+    input logic clk,
+    input logic rst_n,
+    input logic [15:0] count
+);
+
+    counter #(
+        .WIDTH(16),
+        .MAX(65535)
+    ) u_cnt (
+        .clk(clk),
+        .rst_n(rst_n),
+        .count(count)
+    );
+
+endmodule
+\end{lstlisting}
+
+\section{Localparams (\code{localparam})}
+
+Localparams are declared in the module body and \textbf{cannot} be overridden during instantiation:
+
+\begin{lstlisting}[language=Slip]
+module fsm (clk, state) {
+    logic clk;
+    logic [1:0] state;
+    localparam IDLE = 0;
+    localparam RUN  = 1;
+    localparam DONE = 2;
+}
+\end{lstlisting}
+
+Generates:
+
+\begin{lstlisting}[language=SystemVerilog]
+module fsm (
+    input logic clk,
+    input logic [1:0] state
+);
+
+    localparam IDLE = 0;
+    localparam RUN = 1;
+    localparam DONE = 2;
+
+endmodule
+\end{lstlisting}
+
+Attempting to override a localparam in an instance raises a semantic error:
+
+\begin{lstlisting}[language=Slip]
+fsm #(.IDLE(3)) u1 { .clk, .state };  // ERROR
+\end{lstlisting}
+
+Localparams can be used in signal widths, \slipinline{`for} bounds, and \slipinline{`if} conditions.
+
+% ──────────────────────────────────────────────────────────────────
+\chapter{Signals}
+% ──────────────────────────────────────────────────────────────────
+
+\section{Explicit Declaration}
+
+\begin{lstlisting}[language=Slip]
+logic [7:0] data;          // 8-bit signal
+logic flag;                // 1-bit signal
+signed [15:0] val;         // signed 16-bit
+logic [7:0] mem [0:15];    // array of 16 x 8-bit
+logic [WIDTH-1:0] bus;     // parameterized width
+\end{lstlisting}
+
+The \code{logic} keyword is optional for bare declarations:
+
+\begin{lstlisting}[language=Slip]
+data;                      // equivalent to: logic data;
+\end{lstlisting}
+
+\section{Implicit Declaration}
+
+Signals that are referenced but not declared are automatically created as \code{logic} signals:
+
+\begin{lstlisting}[language=Slip]
+module example (a, b) {
+    logic a;
+    logic b;
+    assign y = a & b;  // 'y' is implicitly declared as logic
+}
+\end{lstlisting}
+
+Generates:
+
+\begin{lstlisting}[language=SystemVerilog]
+module example (
+    input logic a,
+    input logic b
+);
+
+    logic y;
+
+    assign y = a & b;
+
+endmodule
+\end{lstlisting}
+
+Implicit signals used in width-specific contexts (e.g., port connections) have their width inferred. If the width cannot be determined, an error is raised.
+
+% ──────────────────────────────────────────────────────────────────
+\chapter{Port Inference}
+\label{ch:port-inference}
+% ──────────────────────────────────────────────────────────────────
+
+Slip infers port directions automatically from signal usage within the module body:
+
+\begin{table}[htbp]
+\centering
+\begin{tabular}{ll}
+\toprule
+\textbf{Usage Pattern} & \textbf{Inferred Direction} \\
+\midrule
+Only appears in expressions (right-hand side) & \code{input} \\
+Only appears as assignment target (left-hand side) & \code{output} \\
+Both read and driven & \code{inout} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Example}
+
+\begin{lstlisting}[language=Slip]
+module adder (a, b, sum) {
+    logic a;
+    logic b;
+    logic sum;
+    assign sum = a + b;
+}
+\end{lstlisting}
+
+Generates:
+
+\begin{lstlisting}[language=SystemVerilog]
+module adder (
+    input logic a,
+    input logic b,
+    output logic sum
+);
+
+    assign sum = a + b;
+
+endmodule
+\end{lstlisting}
+
+% ──────────────────────────────────────────────────────────────────
+\chapter{Assignments}
+% ──────────────────────────────────────────────────────────────────
+
+\section{Continuous Assignment}
+
+At module level, both forms generate \svinline{assign} statements in SystemVerilog:
+
+\begin{lstlisting}[language=Slip]
+assign y = a & b;          // explicit 'assign' keyword
+y = a + b;                 // bare assignment (also generates 'assign')
+\end{lstlisting}
+
+Both generate continuous assignments:
+
+\begin{lstlisting}[language=SystemVerilog]
+assign y = a & b;
+assign z = a + b;
+\end{lstlisting}
+
+\section{Procedural Assignment}
+
+Inside \code{seq} and \code{comb} blocks, assignments become procedural:
+
+\begin{lstlisting}[language=Slip]
+seq (clk) {
+    q <= d;                // non-blocking (sequential)
+}
+
+comb {
+    y = sel ? a : b;       // blocking (combinational)
+}
+\end{lstlisting}
+
+Generates:
+
+\begin{lstlisting}[language=SystemVerilog]
+    always_ff @(posedge clk) begin
+        q <= d;
+    end
+
+    always_comb begin
+        y = sel ? a : b;
+    end
+\end{lstlisting}
+
+\begin{remark}
+The \code{assign} keyword must \textbf{not} be used inside \code{seq} or \code{comb} blocks. It is reserved for module-level continuous assignments only.
+\end{remark}
+
+% ──────────────────────────────────────────────────────────────────
+\chapter{Sequential Logic (\code{seq})}
+% ──────────────────────────────────────────────────────────────────
+
+The \code{seq} block generates an \svinline{always\_ff} block with the specified clock and optional asynchronous reset.
+
+\section{Basic Clock}
+
+\begin{lstlisting}[language=Slip]
+seq (clk) {
+    q <= d;
+}
+\end{lstlisting}
+
+Generates:
+
+\begin{lstlisting}[language=SystemVerilog]
+    always_ff @(posedge clk) begin
+        q <= d;
+    end
+\end{lstlisting}
+
+\section{Clock with Asynchronous Reset}
+
+\begin{lstlisting}[language=Slip]
+seq (clk, neg: rst_n) {
+    if (!rst_n) {
+        q <= 0;
+    } else {
+        q <= d;
+    }
+}
+\end{lstlisting}
+
+Generates:
+
+\begin{lstlisting}[language=SystemVerilog]
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            q <= 0;
+        end else begin
+            q <= d;
+        end
+    end
+\end{lstlisting}
+
+Reset polarity options:
+\begin{itemize}
+  \item \code{neg: rst\_n} --- active-low reset (\svinline{negedge rst\_n})
+  \item \code{pos: rst} --- active-high reset (\svinline{posedge rst})
+\end{itemize}
+
+\section{Automatic Blocking-to-Nonblocking Conversion}
+
+All blocking assignments (\code{=}) inside \code{seq} blocks are automatically converted to non-blocking (\code{<=}). This prevents common sequential logic mistakes:
+
+\begin{lstlisting}[language=Slip]
+seq (clk) {
+    q = d;   // automatically becomes q <= d;
+}
+\end{lstlisting}
+
+Generates (blocking \code{=} converted to non-blocking \code{<=}):
+
+\begin{lstlisting}[language=SystemVerilog]
+    always_ff @(posedge clk) begin
+        q <= d;
+    end
+\end{lstlisting}
+
+A warning is emitted when this conversion occurs.
+
+% ──────────────────────────────────────────────────────────────────
+\chapter{Combinational Logic (\code{comb})}
+% ──────────────────────────────────────────────────────────────────
+
+The \code{comb} block generates an \svinline{always\_comb} block. Assignments inside remain blocking:
+
+\begin{lstlisting}[language=Slip]
+comb {
+    if (sel) {
+        y = a;
+    } else {
+        y = b;
+    }
+}
+\end{lstlisting}
+
+Generates:
+
+\begin{lstlisting}[language=SystemVerilog]
+    always_comb begin
+        if (sel) begin
+            y = a;
+        end else begin
+            y = b;
+        end
+    end
+\end{lstlisting}
+
+If the combinational block infers a latch (e.g., incomplete assignment in an \code{if} without \code{else}), Slip emits \svinline{always\_latch} without a sensitivity list:
+
+\begin{lstlisting}[language=SystemVerilog]
+always_latch begin
+    if (en) begin
+        q <= d;
+    end
+end
+\end{lstlisting}
+
+% ──────────────────────────────────────────────────────────────────
+\chapter{Initial Blocks}
+% ──────────────────────────────────────────────────────────────────
+
+The \code{initial} block generates an \svinline{initial} block. It is primarily used in testbenches for initialization sequences. Assignments inside remain blocking:
+
+\begin{lstlisting}[language=Slip]
+initial {
+    clk = 0;
+    rst_n = 0;
+}
+\end{lstlisting}
+
+Generates:
+
+\begin{lstlisting}[language=SystemVerilog]
+    initial begin
+        clk = 0;
+        rst_n = 0;
+    end
+\end{lstlisting}
+
+% ──────────────────────────────────────────────────────────────────
+\chapter{Case Statements}
+% ──────────────────────────────────────────────────────────────────
+
+Slip supports \code{case}, \code{casez}, and \code{casex} statements with a brace-based syntax.
+
+\section{Basic Case}
+
+\begin{lstlisting}[language=Slip]
+case (sel) {
+    2'b00: y = a;
+    2'b01: y = b;
+    2'b10, 2'b11: y = c;
+    default: y = 0;
+}
+\end{lstlisting}
+
+Generates:
+
+\begin{lstlisting}[language=SystemVerilog]
+    always_comb begin
+        case (sel)
+            2'b00: begin
+                y = a;
+            end
+            2'b01: begin
+                y = b;
+            end
+            2'b10, 2'b11: begin
+                y = c;
+            end
+            default: begin
+                y = 0;
+            end
+        endcase
+    end
+\end{lstlisting}
+
+\section{Casez with Wildcards}
+
+\code{casez} treats \code{?} as don't-care bits:
+
+\begin{lstlisting}[language=Slip]
+casez (opcode) {
+    4'b1???: y = a;
+    4'b01??: y = b;
+    4'b001?: y = c;
+    4'b0001: y = d;
+    default: y = 0;
+}
+\end{lstlisting}
+
+Generates:
+
+\begin{lstlisting}[language=SystemVerilog]
+    always_comb begin
+        casez (opcode)
+            4'b1???: begin
+                y = a;
+            end
+            4'b01??: begin
+                y = b;
+            end
+            4'b001?: begin
+                y = c;
+            end
+            4'b0001: begin
+                y = d;
+            end
+            default: begin
+                y = 0;
+            end
+        endcase
+    end
+\end{lstlisting}
+
+\section{Multi-Pattern Items}
+
+A single case item can match multiple patterns, separated by commas:
+
+\begin{lstlisting}[language=Slip]
+localparam IDLE = 0;
+localparam WAIT = 1;
+localparam RUN  = 2;
+
+comb {
+    case (state) {
+        IDLE, WAIT: y = 0;
+        RUN: y = 1;
+        default: y = 0;
+    }
+}
+\end{lstlisting}
+
+Generates (assuming \code{IDLE=0}, \code{WAIT=1}, \code{RUN=2}):
+
+\begin{lstlisting}[language=SystemVerilog]
+localparam IDLE = 0;
+localparam WAIT = 1;
+localparam RUN = 2;
+
+    always_comb begin
+        case (state)
+            IDLE, WAIT: begin
+                y = 0;
+            end
+            RUN: begin
+                y = 1;
+            end
+            default: begin
+                y = 0;
+            end
+        endcase
+    end
+\end{lstlisting}
+
+% ──────────────────────────────────────────────────────────────────
+\chapter{Inside Operator}
+% ──────────────────────────────────────────────────────────────────
+
+The \code{inside} operator tests set membership, following SystemVerilog 2009:
+
+\begin{lstlisting}[language=Slip]
+if (state inside {IDLE, RUN, DONE}) begin
+    // state is one of IDLE, RUN, DONE
+end
+\end{lstlisting}
+
+The right-hand side is a set literal \code{\{v1, v2, ...\}}. At compile time, if all values are constants, the expression evaluates to 0 or 1.
+
+\begin{lstlisting}[language=Slip]
+localparam IDLE = 0;
+localparam RUN  = 1;
+localparam DONE = 2;
+
+comb {
+    if (state inside {IDLE, RUN, DONE}) {
+        active = 1;
+    } else {
+        active = 0;
+    }
+}
+\end{lstlisting}
+
+Generates:
+
+\begin{lstlisting}[language=SystemVerilog]
+    localparam IDLE = 0;
+    localparam RUN = 1;
+    localparam DONE = 2;
+
+    logic active;
+
+    always_comb begin
+        if (state inside {IDLE, RUN, DONE}) begin
+            active = 1;
+        end else begin
+            active = 0;
+        end
+    end
+\end{lstlisting}
+
+% ──────────────────────────────────────────────────────────────────
+\chapter{Compound Assignments}
+% ──────────────────────────────────────────────────────────────────
+
+Slip supports all SystemVerilog compound assignment operators. They are desugared at parse time:
+
+\begin{table}[htbp]
+\centering
+\begin{tabular}{lll}
+\toprule
+\textbf{Operator} & \textbf{Desugars To} & \textbf{Example} \\
+\midrule
+\code{+=}  & \code{a = a + b}   & \code{i += 1} \\
+\code{-=}  & \code{a = a - b}   & \code{count -= 1} \\
+\code{*=}  & \code{a = a * b}   & \code{val *= 2} \\
+\code{/=}  & \code{a = a / b}   & \code{val /= 2} \\
+\code{\%=} & \code{a = a \% b}  & \code{val \%= N} \\
+\code{\&=} & \code{a = a \& b}  & \code{flags \&= MASK} \\
+\code{|=}  & \code{a = a | b}   & \code{flags |= BIT} \\
+\code{\^=} & \code{a = a \^ b}  & \code{flags \^= BIT} \\
+\code{<<=} & \code{a = a << b}  & \code{val <<= 2} \\
+\code{>>=} & \code{a = a >> b}  & \code{val >>= 2} \\
+\code{<<<=} & \code{a = a <<< b} & \code{val <<<= 1} \\
+\code{>>>=} & \code{a = a >>> b} & \code{val >>>= 1} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Compound assignments are valid in all contexts where regular assignments are used (module-level, \code{comb}, \code{seq}, \code{initial}).
+
+\section{Example}
+
+\begin{lstlisting}[language=Slip]
+module m (clk, val, delta) {
+    logic clk;
+    logic [7:0] val;
+    logic [7:0] delta;
+
+    seq (clk) {
+        val += delta;
+        val -= 1;
+    }
+}
+\end{lstlisting}
+
+Generates (compound assignments desugared, blocking converted to non-blocking):
+
+\begin{lstlisting}[language=SystemVerilog]
+module m (
+    input logic clk,
+    output logic [7:0] val,
+    input logic [7:0] delta
+);
+
+    always_ff @(posedge clk) begin
+        val <= val + delta;
+        val <= val - 1;
+    end
+
+endmodule
+\end{lstlisting}
+
+% ──────────────────────────────────────────────────────────────────
+\chapter{Control Flow}
+% ──────────────────────────────────────────────────────────────────
+
+\section{If / Else}
+
+\begin{lstlisting}[language=Slip]
+if (condition) begin
+    // ...
+end else begin
+    // ...
+end
+\end{lstlisting}
+
+\section{For Loop}
+
+Procedural \code{for} loops generate SystemVerilog \svinline{for} statements. They are valid inside \code{seq} and \code{comb} blocks:
+
+\begin{lstlisting}[language=Slip]
+seq (clk, neg: rst_n) {
+    if (!rst_n) {
+        for (i = 0; i < 4; i = i + 1) {
+            reg_file[i] <= 0;
+        }
+    }
+}
+\end{lstlisting}
+
+Generates:
+
+\begin{lstlisting}[language=SystemVerilog]
+    logic [7:0] reg_file [0:3];
+
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            for (int i = 0; i < 4; i = i + 1) begin
+                reg_file[i] <= 0;
+            end
+        end
+    end
+\end{lstlisting}
+
+Loop variables (e.g., \code{i}) are excluded from implicit signal creation --- they are treated as loop-local integers.
+
+\section{For-Loop Step Variants}
+
+The step clause supports three forms:
+
+\begin{lstlisting}[language=Slip]
+for (i = 0; i < N; i = i + 1) { ... }   // standard
+for (i = 0; i < N; i += 1)    { ... }   // compound assignment
+for (i = 0; i < N; i++)       { ... }   // increment
+\end{lstlisting}
+
+Compound assignments (\code{+=}, \code{-=}, \code{*=}, etc.) are desugared at parse time: \code{i += 1} becomes \code{i = i + 1}. All three forms generate the same SystemVerilog output:
+
+\begin{lstlisting}[language=SystemVerilog]
+for (int i = 0; i < N; i = i + 1) begin
+    // ...
+end
+\end{lstlisting}
+
+\section{Restrictions}
+
+\begin{itemize}
+  \item \code{while} loops are not supported (combinational while loops are unsafe in synthesis).
+\end{itemize}
+
+% ──────────────────────────────────────────────────────────────────
+\chapter{Module Instantiation}
+% ──────────────────────────────────────────────────────────────────
+
+\section{Basic Instantiation}
+
+\begin{lstlisting}[language=Slip]
+module_name instance_name {
+    .port1(signal1),
+    .port2(signal2)
+};
+\end{lstlisting}
+
+\section{Same-Name Shorthand}
+
+When the port name matches the signal name, the signal expression can be omitted:
+
+\begin{lstlisting}[language=Slip]
+inner u1 { .clk, .rst_n, .data_in };
+// Equivalent to: .clk(clk), .rst_n(rst_n), .data_in(data_in)
+\end{lstlisting}
+
+\section{Parameter Override}
+
+\begin{lstlisting}[language=Slip]
+inner #(.WIDTH(16), .DEPTH(32)) u1 { .clk, .data_in, .data_out };
+\end{lstlisting}
+
+\section{Dangling Ports (\code{\_})}
+
+Use \code{\_} to leave a port intentionally unconnected:
+
+\begin{lstlisting}[language=Slip]
+inner u1 { .clk, .rst_n(_), .data_in };
+\end{lstlisting}
+
+In the generated SystemVerilog, the \code{.rst\_n()} connection is omitted entirely.
+
+\section{Regex Port Mapping}
+
+Use regex patterns to map groups of ports to signals:
+
+\begin{lstlisting}[language=Slip]
+child u1 {
+    .clk,
+    "data_(.*)" => "bus_\1"
+};
+\end{lstlisting}
+
+This maps \code{data\_0} $\to$ \code{bus\_0}, \code{data\_1} $\to$ \code{bus\_1}, etc. Signal widths are inferred from the target module's port declarations.
+
+Regex connections are processed in order and can be mixed with explicit connections. The priority order is:
+\begin{enumerate}
+  \item Explicit connections (highest priority)
+  \item Same-name shorthand
+  \item Regex patterns (first matching rule wins)
+\end{enumerate}
+
+\subsection{Regex Functions}
+
+Use \code{\$func(...)} syntax to transform captured groups in replacements:
+
+\begin{lstlisting}[language=Slip]
+child u1 {
+    .clk,
+    "data_(.*)" => "bus_\$upper(\\1)",    // uppercase
+    "ch_(.*)"   => "port_\$add(\\1, 1)"   // arithmetic
+};
+\end{lstlisting}
+
+Built-in functions:
+\begin{itemize}
+  \item \textbf{String}: \code{\$upper}, \code{\$lower}, \code{\$reverse}, \code{\$substr}, \code{\$replace}, \code{\$concat}
+  \item \textbf{Arithmetic}: \code{\$add}, \code{\$sub}, \code{\$mul}, \code{\$div}, \code{\$mod}
+  \item \textbf{Bit}: \code{\$bit\_reverse}, \code{\$bit\_select}
+\end{itemize}
+
+Multiple functions and prefix/suffix text are supported:
+\begin{lstlisting}[language=Slip]
+"port_(.*)" => "pre_\$upper(\\1)_post"   // prefix + function + suffix
+"a_(.*)_b_(.*)" => "\$upper(\\1)_\$lower(\\2)"  // multiple functions
+\end{lstlisting}
+
+\subsection{Custom Functions}
+
+Register custom functions via the Python API:
+
+\begin{lstlisting}[language=Python]
+from slip.semantic.regex_funcs import register
+
+def my_func(s: str) -> str:
+    return f"prefix_{s}"
+
+register("my_func", my_func)
+\end{lstlisting}
+
+Then use in Slip:
+
+\begin{lstlisting}[language=Slip]
+child u1 { .clk, "data_(.*)" => "\$my_func(\\1)" };
+\end{lstlisting}
+
+Custom functions can override built-in functions. The function signature must accept string arguments and return a string.
+
+\subsection{Native Custom Functions (defun)}
+
+Define custom functions directly in Slip using Python-style syntax:
+
+\begin{lstlisting}[language=Slip]
+defun prefix(s):
+    return "bus_" + s
+
+defun to_upper(s):
+    return s.upper()
+
+defun inc(n):
+    return n + 1
+
+module top (clk) {
+    logic clk;
+    inner u1 {
+        .clk,
+        "data_(.*)" => "\$prefix(\\1)",
+        "name_(.*)" => "\$to_upper(\\1)",
+        "ch_(.*)" => "\$inc(\\1)"
+    };
+}
+\end{lstlisting}
+
+The function body supports full Python expressions, including:
+\begin{itemize}
+  \item String concatenation: \code{a + b}
+  \item String methods: \code{.upper()}, \code{.lower()}, \code{.reverse()}, \code{.replace()}, \code{.strip()}, \code{.split()}, \code{.startswith()}, etc.
+  \item Arithmetic: \code{+}, \code{-}, \code{*}, \code{/}, \code{\%}
+  \item Method chaining: \code{s.upper().reverse()}
+  \item Built-in functions: \code{len()}, \code{int()}, \code{str()}, \code{range()}, etc.
+  \item Indexing and slicing: \code{s[0]}, \code{s[1:3]}, \code{s[3:]}, \code{s[:3]}, \code{s[-1]}
+  \item Ternary expressions: \code{x if cond else y}
+\end{itemize}
+
+\subsubsection{Examples}
+
+Replace characters in port names:
+\begin{lstlisting}[language=Slip]
+defun fix_names(s):
+    return s.replace("_", "-")
+
+module inner (data_in, data_out) {
+    logic data_in;
+    logic data_out;
+    assign data_out = data_in;
+}
+
+module top (clk) {
+    logic clk;
+    inner u1 { .clk, "data_(.*)" => "bus_\$fix_names(\\1)" };
+    // data_in -> bus_data-in, data_out -> bus_data-out
+}
+\end{lstlisting}
+
+Extract part of port name using slicing:
+\begin{lstlisting}[language=Slip]
+defun shorten(s):
+    return s[:4]  // take first 4 characters
+
+module inner (channel_a, channel_b) {
+    logic channel_a;
+    logic channel_b;
+    assign channel_b = channel_a;
+}
+
+module top (clk) {
+    logic clk;
+    inner u1 { .clk, "channel_(.*)" => "\$shorten(\\1)" };
+    // channel_a -> chan, channel_b -> chan
+}
+\end{lstlisting}
+
+Combine methods with chaining:
+\begin{lstlisting}[language=Slip]
+defun clean_upper(s):
+    return s.strip().upper().replace("_", "")
+
+module inner (sig_in, sig_out) {
+    logic sig_in;
+    logic sig_out;
+    assign sig_out = sig_in;
+}
+
+module top (clk) {
+    logic clk;
+    inner u1 { .clk, "sig_(.*)" => "port_\$clean_upper(\\1)" };
+    // sig_in -> port_SIGIN, sig_out -> port_SIGOUT
+}
+\end{lstlisting}
+
+Conditional logic with \code{startswith()}:
+\begin{lstlisting}[language=Slip]
+defun prefix_by_type(s):
+    return "axi_" + s if s.startswith("ar") else "apb_" + s
+
+module inner (araddr, awaddr, wdata) {
+    logic araddr;
+    logic awaddr;
+    logic wdata;
+    assign wdata = araddr;
+}
+
+module top (clk) {
+    logic clk;
+    inner u1 { .clk, "(.*)" => "\$prefix_by_type(\\1)" };
+    // araddr -> axi_araddr, awaddr -> apb_awaddr, wdata -> apb_wdata
+}
+\end{lstlisting}
+
+Functions can be defined anywhere at the top level (before or after modules). All \code{defun} functions are registered before instance resolution.
+
+\section{Port Connection Constants}
+
+Port connection expressions that are constants must follow these rules:
+
+\begin{itemize}
+  \item \textbf{Allowed}: width-prefixed literals (e.g., \code{1'b0}, \code{8'hFF}) and fill constants (\code{'0}, \code{'1}).
+  \item \textbf{Forbidden}: bare integers (e.g., \code{0}, \code{42}).
+\end{itemize}
+
+\begin{lstlisting}[language=Slip]
+// WRONG -- bare integer in port connection
+inner u1 { .data_in(0) };
+
+// OK -- width-prefixed
+inner u1 { .data_in(1'b0) };
+
+// OK -- fill constant (width determined by target port)
+inner u1 { .data_in('0) };
+\end{lstlisting}
+
+The fill constants \code{'0} and \code{'1} are SystemVerilog native adaptive-width constants. Slip passes them through directly; the downstream tool determines their width from the target port.
+
+% ──────────────────────────────────────────────────────────────────
+\chapter{Metaprogramming}
+% ──────────────────────────────────────────────────────────────────
+
+Slip provides compile-time \slipinline{`for} loops and \slipinline{`if} conditionals. These are fully expanded before code generation.
+
+\section{\texorpdfstring{\code{`for}}{`for} Loop}
+
+Syntax uses backtick-prefixed keywords and loop variables:
+
+\begin{lstlisting}[language=Slip]
+`for (`i = 0; `i < 4; `i = `i + 1) {
+    logic [7:0] data_`i;
+    assign data_`i = `i;
+}
+\end{lstlisting}
+
+After expansion, this becomes:
+
+\begin{lstlisting}[language=Slip]
+logic [7:0] data_0;
+logic [7:0] data_1;
+logic [7:0] data_2;
+logic [7:0] data_3;
+assign data_0 = 0;
+assign data_1 = 1;
+assign data_2 = 2;
+assign data_3 = 3;
+\end{lstlisting}
+
+\subsection{Template Identifiers}
+
+Loop variables can appear inside identifier names using backtick syntax. The lexer merges the surrounding identifier text with the backtick variable into a single token:
+
+\begin{lstlisting}[language=Slip]
+`for (`i = 0; `i < 3; `i = `i + 1) {
+    assign out_`i = in_`i;
+}
+\end{lstlisting}
+
+Generates:
+
+\begin{lstlisting}[language=SystemVerilog]
+    logic out_0;
+    logic in_0;
+    logic out_1;
+    logic in_1;
+    logic out_2;
+    logic in_2;
+
+    assign out_0 = in_0;
+    assign out_1 = in_1;
+    assign out_2 = in_2;
+\end{lstlisting}
+
+\subsection{Nested Loops}
+
+\begin{lstlisting}[language=Slip]
+`for (`i = 0; `i < 2; `i = `i + 1) {
+    `for (`j = 0; `j < 2; `j = `j + 1) {
+        assign result_`i_`j = `i + `j;
+    }
+}
+\end{lstlisting}
+
+Generates:
+
+\begin{lstlisting}[language=SystemVerilog]
+    logic result_0_0;
+    logic result_0_1;
+    logic result_1_0;
+    logic result_1_1;
+
+    assign result_0_0 = 0;
+    assign result_0_1 = 1;
+    assign result_1_0 = 1;
+    assign result_1_1 = 2;
+\end{lstlisting}
+
+Template identifiers with multiple backtick variables (e.g., \code{a`i\_`j}) are fully supported. The lexer merges them into a single token in a single pass.
+
+\subsection{Constant Folding}
+
+\label{sec:constant-folding}
+
+After substituting the loop variable with its current integer value, the expansion engine performs \textbf{constant folding} on the resulting expression tree:
+
+\begin{table}[htbp]
+\centering
+\begin{tabular}{ll}
+\toprule
+\textbf{Pattern} & \textbf{Result} \\
+\midrule
+Both operands are integer literals & Evaluate to result literal \\
+One operand is \code{0}, op is \code{+} or \code{-} & Identity: return other operand \\
+One operand is \code{1}, op is \code{*} or \code{/} & Identity: return other operand \\
+One operand is \code{0}, op is \code{*} & Zero: return \code{0} \\
+Unary operand is integer literal & Evaluate to result literal \\
+Ternary condition is integer literal & Select corresponding branch \\
+Parenthesized expression is literal & Unwrap parentheses \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Subexpressions containing non-constant references (e.g., parameters) are preserved unchanged. Only the constant parts are simplified.
+
+\textbf{Example} --- bit reversal with parameterized width:
+
+\begin{lstlisting}[language=Slip]
+module bit_reverse #(param W = 8) (din, dout) {
+    logic [W-1:0] din;
+    logic [W-1:0] dout;
+
+    comb {
+        `for (`i = 0; `i < W; `i = `i + 1) {
+            dout[W - 1 - `i] = din[`i];
+        }
+    }
+}
+\end{lstlisting}
+
+When \code{W=8} and \code{`i=0}, the index expression \code{W - 1 - 0} is folded:
+\begin{enumerate}
+  \item Substitute \code{`i} with \code{0}: \code{W - 1 - 0}
+  \item Fold \code{1 - 0} $\to$ \code{1}: \code{W - 1}
+  \item Result: \code{dout[W - 1] = din[0]}
+\end{enumerate}
+
+The generated SystemVerilog contains no \code{- 0} artifacts.
+
+\subsection{Compile-Time Expression Evaluation}
+
+\slipinline{`for} init, bound, and step expressions, as well as \slipinline{`if} conditions, must be evaluable to integer constants at compile time. The evaluation engine supports:
+
+\begin{itemize}
+  \item Integer literals and \code{param}/\code{localparam} references
+  \item Arithmetic: \code{+}, \code{-}, \code{*}, \code{/}, \code{\%}, \code{**}
+  \item Relational: \code{<}, \code{>}, \code{<=}, \code{>=}, \code{==}, \code{!=}, \code{===}, \code{!==}
+  \item Logical: \code{\&\&}, \code{||}
+  \item Bitwise: \code{\&}, \code{|}, \code{\^}, \code{\~}, \code{<<}, \code{>>}, \code{<<<}, \code{>>>}
+  \item Unary prefix: \code{-}, \code{!}, \code{\~}
+  \item Parenthesized sub-expressions
+\end{itemize}
+
+\section{\texorpdfstring{\code{`if}}{`if} Conditional}
+
+\begin{lstlisting}[language=Slip]
+`if (ENABLE_DEBUG) {
+    logic [7:0] debug_out;
+    assign debug_out = internal_signal;
+}
+`else {
+    assign debug_out = 0;
+}
+\end{lstlisting}
+
+When \code{ENABLE\_DEBUG} evaluates to non-zero, generates:
+
+\begin{lstlisting}[language=SystemVerilog]
+    logic [7:0] debug_out;
+    assign debug_out = internal_signal;
+\end{lstlisting}
+
+When \code{ENABLE\_DEBUG} evaluates to zero, generates:
+
+\begin{lstlisting}[language=SystemVerilog]
+assign debug_out = 0;
+\end{lstlisting}
+
+The condition must be a compile-time constant expression (parameter, localparam, or integer literal expression).
+
+\section{Restrictions}
+
+\begin{itemize}
+  \item Loop variables (\slipinline{`i}) cannot be assigned within the loop body --- they are controlled by the expansion engine.
+  \item \slipinline{`for} / \slipinline{`if} conditions must be evaluable at compile time.
+  \item The step variable must match the loop variable (e.g., \slipinline{`i = `i + 1}).
+  \item Maximum 1024 iterations per loop (prevents infinite loops).
+\end{itemize}
+
+% ──────────────────────────────────────────────────────────────────
+\chapter{Expressions and Operators}
+% ──────────────────────────────────────────────────────────────────
+
+\section{Operator Precedence}
+
+From highest to lowest (following IEEE 1800-2017):
+
+\begin{table}[htbp]
+\centering
+\begin{longtable}{cll}
+\toprule
+\textbf{Priority} & \textbf{Operators} & \textbf{Associativity} \\
+\midrule
+\endfirsthead
+\toprule
+\textbf{Priority} & \textbf{Operators} & \textbf{Associativity} \\
+\midrule
+\endhead
+1 (highest) & \code{[]}, \code{[ : ]}, function call, \code{N'(expr)} & Left \\
+2 & \code{+}, \code{-}, \code{!}, \code{\~} (unary); \code{signed'}, \code{unsigned'} & Right \\
+3 & \code{**} & Right \\
+4 & \code{*}, \code{/}, \code{\%} & Left \\
+5 & \code{+}, \code{-} (binary) & Left \\
+6 & \code{<<}, \code{>>}, \code{<<<}, \code{>>>} & Left \\
+7 & \code{<}, \code{>}, \code{<=}, \code{>=} & Left \\
+8 & \code{==}, \code{!=}, \code{===}, \code{!==} & Left \\
+9 & \code{\&} & Left \\
+10 & \code{\^} & Left \\
+11 & \code{|} & Left \\
+12 & \code{\&\&} & Left \\
+13 & \code{||} & Left \\
+14 & \code{?:} (ternary) & Right \\
+15 (lowest) & \code{inside} (set membership) & Left \\
+\bottomrule
+\end{longtable}
+\end{table}
+
+\section{Bit Selection and Part Select}
+
+\begin{lstlisting}[language=Slip]
+data[3]          // bit select
+data[7:0]        // part select
+data[i]          // variable index
+\end{lstlisting}
+
+\section{Concatenation and Replication}
+
+\begin{lstlisting}[language=Slip]
+{a, b, c}        // concatenation
+{4{1'b1}}        // replication: 4 copies of 1'b1
+\end{lstlisting}
+
+Nested replications are supported: \code{\{4\{\{2\{1'b0\}\}\}\}} produces 8 bits of zero.
+
+\section{Type Casting}
+
+\begin{lstlisting}[language=Slip]
+signed'(expr)    // signed cast
+unsigned'(expr)  // unsigned cast
+8'(expr)         // width cast (truncate or zero-extend to 8 bits)
+\end{lstlisting}
+
+Both \code{signed} and \code{unsigned} without a following \code{'} raise a syntax error.
+
+\section{Ternary Operator}
+
+\begin{lstlisting}[language=Slip]
+sel ? a : b
+\end{lstlisting}
+
+Right-associative: \code{a ? b : c ? d : e} is parsed as \code{a ? b : (c ? d : e)}.
+
+% ──────────────────────────────────────────────────────────────────
+\chapter{Special Constants}
+% ──────────────────────────────────────────────────────────────────
+
+\section{Fill Constants}
+
+\begin{lstlisting}[language=Slip]
+'0    // all bits zero (width determined by context)
+'1    // all bits one  (width determined by context)
+\end{lstlisting}
+
+These are SystemVerilog native fill constants. Their width is automatically determined by the connected port or assignment target. Slip passes them through without width inference.
+
+\section{Width-Prefixed Literals}
+
+\begin{lstlisting}[language=Slip]
+1'b0          // 1-bit binary zero
+1'b1          // 1-bit binary one
+8'hFF         // 8-bit hexadecimal
+4'b1010       // 4-bit binary
+16'd255       // 16-bit decimal
+8'o377        // 8-bit octal
+\end{lstlisting}
+
+Digits are validated against the specified radix. For example, \code{4'bABCD} and \code{4'o888} are rejected. The four-state values \code{x} and \code{z} are accepted in any radix.
+
+\section{Bare Integers}
+
+\begin{lstlisting}[language=Slip]
+0             // bare integer (OK in assignments and expressions)
+42            // bare integer
+\end{lstlisting}
+
+Bare integers are \textbf{not allowed} in port connections --- use width-prefixed literals or fill constants instead.
+
+% ════════════════════════════════════════════════════════════════════
+% Part III: Advanced Topics
+% ════════════════════════════════════════════════════════════════════
+
+\chapter{IP Integration}
+
+Slip can instantiate external SystemVerilog modules by providing IP directories:
+
+\begin{lstlisting}[language=bash]
+slip build -ip ./ip_cores -ip ./vendor_lib design.slip
+\end{lstlisting}
+
+\section{How It Works}
+
+\begin{enumerate}
+  \item Slip scans IP directories for \code{.sv} and \code{.v} files.
+  \item When an instance references a module not defined in the \code{.slip} source, Slip uses pyslang to reflect the external module's ports and parameters.
+  \item Port widths are evaluated using the instance's parameter overrides.
+  \item Signals are created with correct widths for regex-mapped connections.
+\end{enumerate}
+
+\section{Example}
+
+Given an external IP file \code{ip\_cores/fifo.sv}:
+
+\begin{lstlisting}[language=SystemVerilog]
+module fifo #(
+    parameter DEPTH = 16,
+    parameter WIDTH = 8
+)(
+    input  logic             clk,
+    input  logic             rst_n,
+    input  logic [WIDTH-1:0] din,
+    output logic [WIDTH-1:0] dout,
+    output logic             full
+);
+\end{lstlisting}
+
+In your Slip source:
+
+\begin{lstlisting}[language=Slip]
+module top (clk, rst_n, data_in, data_out) {
+    logic clk;
+    logic rst_n;
+    logic [7:0] data_in;
+    logic [7:0] data_out;
+
+    fifo #(.DEPTH(32)) u_fifo {
+        .clk,
+        .rst_n,
+        .din(data_in),
+        .dout(data_out),
+        .full(_)
+    };
+}
+\end{lstlisting}
+
+The \code{.full(\_)} connection leaves the \code{full} output dangling.
+
+% ──────────────────────────────────────────────────────────────────
+\chapter{Semantic Rules}
+% ──────────────────────────────────────────────────────────────────
+
+\section{Multi-Driver Detection}
+
+A signal cannot be driven by multiple procedural blocks. This is caught at compile time:
+
+\begin{lstlisting}[language=Slip]
+// ERROR: signal 'q' driven by multiple blocks
+seq (clk) { q <= a; }
+seq (clk) { q <= b; }
+\end{lstlisting}
+
+The analyzer tracks assignments through \code{if} and \code{for} nesting within each block. Two separate \code{seq} or \code{comb} blocks driving the same signal produce an error.
+
+\section{Combinational Loop Detection}
+
+Feedback loops inside \code{comb} blocks are detected using DFS-based cycle detection on the signal dependency graph:
+
+\begin{lstlisting}[language=Slip]
+// ERROR: combinational loop detected
+comb {
+    a = b + 1;
+    b = a + 1;  // 'a' depends on 'b', 'b' depends on 'a'
+}
+\end{lstlisting}
+
+The detector builds a dependency graph per \code{comb} block by tracing which signals are read and which are driven. If a cycle is found, a \code{SlipSemanticError} is raised.
+
+\section{Width Mismatch Warnings}
+
+The compiler checks for width mismatches in assignments and instance port connections. When both sides have concrete integer widths and they differ, a warning is emitted:
+
+\begin{lstlisting}[language=Slip]
+module m (out[7:0]) {
+    assign out = 42;  // WARNING: 'out' is 8 bits, but value is 32 bits
+}
+\end{lstlisting}
+
+Width-prefixed literals use their declared width:
+
+\begin{lstlisting}[language=Slip]
+module m (out[7:0]) {
+    assign out = 8'hFF;  // OK: both 8 bits
+}
+\end{lstlisting}
+
+Instance port connections are also checked:
+
+\begin{lstlisting}[language=Slip]
+module sub (data[7:0]) { ... }
+module top (out[3:0]) {
+    sub u { .data(out) };  // WARNING: port expects 8 bits, signal is 4 bits
+}
+\end{lstlisting}
+
+Parameterized widths with default values are evaluated using those defaults. Widths that cannot be evaluated are silently skipped.
+
+\section{Localparam Override Protection}
+
+Parameters can be overridden at instantiation; localparams cannot:
+
+\begin{lstlisting}[language=Slip]
+module example #(param W = 8) () {
+    localparam MASK = 255;
+}
+
+// OK
+example #(.W(16)) u1 {};
+
+// ERROR: cannot override localparam 'MASK'
+example #(.MASK(511)) u2 {};
+\end{lstlisting}
+
+\section{Implicit Signal Width Inference}
+
+Implicit signals inherit their width from the context in which they are used:
+
+\begin{lstlisting}[language=Slip]
+module top (a, b, sum) {
+    logic [7:0] a;
+    logic [7:0] b;
+    // 'sum' is implicitly created as [7:0] from port connection context
+    adder u1 { .a, .b, .sum };
+}
+\end{lstlisting}
+
+If the width cannot be inferred, an error is raised.
+
+\section{Integer Literal Validation}
+
+Verilog-style sized literals are validated at lex time:
+\begin{itemize}
+  \item Digits must be valid for the specified radix (e.g., \code{4'bABCD} is rejected).
+  \item The digit portion must not be empty or underscore-only (e.g., \code{4'b\_} is rejected).
+  \item Four-state values \code{x}/\code{z} are accepted in any radix.
+\end{itemize}
+
+% ──────────────────────────────────────────────────────────────────
+\chapter{Error Reference}
+% ──────────────────────────────────────────────────────────────────
+
+\section{Compilation Errors}
+
+\begin{description}[style=nextline,leftmargin=2em]
+
+\item[\texttt{cannot override localparam 'name'}]
+Attempting to override a localparam in instance \code{\#(...)}.
+
+\item[\texttt{unconnected input port 'name'}]
+Input port not connected and not marked with \code{\_}.
+
+\item[\texttt{unable to infer width for implicit signal 'name'}]
+Implicit signal used in a context where width cannot be determined.
+
+\item[\texttt{bare integer '...' in port connection must have explicit width}]
+Bare integer used in port connection. Use a width-prefixed literal (\texttt{1'b0}) or a fill constant (\texttt{'0}).
+
+\item[\texttt{signal 'name' driven by multiple blocks}]
+Multi-driver conflict --- the signal is driven by more than one \code{seq} or \code{comb} block.
+
+\item[\texttt{invalid digit 'X' for radix 'r' in literal}]
+Integer literal contains a digit invalid for the specified radix (e.g.\ \texttt{4'bABCD}).
+
+\item[\texttt{integer literal has no actual digit value}]
+Literal has only underscores after the radix prefix (e.g.\ \texttt{4'b\_}).
+
+\item[\texttt{`for loop exceeded 1024 iterations}]
+Metaprogramming loop body was expanded more than 1024 times.
+
+\item[\texttt{cannot evaluate 'name' at compile time}]
+Non-constant expression in \slipinline{`for}/\slipinline{`if} condition, init, or step.
+
+\item[\texttt{`for step variable '...' must match loop variable '...'}]
+Step variable differs from the declared loop variable.
+
+\item[\texttt{unsupported operator '...' in compile-time expression}]
+Operator not supported by the constant expression evaluator.
+
+\item[\texttt{combinational loop detected: ...}]
+A feedback loop was found inside a \code{comb} block. The error message lists the signals involved in the cycle.
+
+\item[\texttt{duplicate declaration of 'name'}]
+A signal, instance, or localparam with the same name is declared more than once in the same module.
+
+\item[\texttt{reset polarity inconsistency: ...}]
+A reset signal is used with conflicting polarity (both \code{pos:} and \code{neg:}) across different \code{seq} blocks.
+
+\end{description}
+
+\section{Warnings}
+
+\begin{description}[style=nextline,leftmargin=2em]
+
+\item[\texttt{blocking '=' converted to '<=' in seq block}]
+Automatic assignment correction in sequential logic.
+
+\item[\texttt{pyslang not installed --- skipping validation}]
+Install \code{pyslang} to enable IEEE 1800 validation of generated output.
+
+\item[\texttt{width mismatch: 'name' is N bits, but value is M bits}]
+An assignment has mismatched widths between the target signal and the value expression.
+
+\item[\texttt{port width mismatch: 'port' expects N bits, but 'signal' is M bits}]
+An instance port connection has mismatched widths between the port declaration and the connected signal.
+
+\end{description}
+
+% ──────────────────────────────────────────────────────────────────
+\chapter{Complete Examples}
+% ──────────────────────────────────────────────────────────────────
+
+\section{Parameterized Pipeline Register}
+
+\begin{lstlisting}[language=Slip]
+module pipeline_reg #(param WIDTH = 8) (clk, rst_n, d, q) {
+    logic clk;
+    logic rst_n;
+    logic [WIDTH-1:0] d;
+    logic [WIDTH-1:0] q;
+
+    seq (clk, neg: rst_n) {
+        if (!rst_n) {
+            q <= 0;
+        } else {
+            q <= d;
+        }
+    }
+}
+\end{lstlisting}
+
+Generates:
+
+\begin{lstlisting}[language=SystemVerilog]
+module pipeline_reg #(
+    parameter WIDTH = 8
+) (
+    input logic clk,
+    input logic rst_n,
+    input logic [WIDTH - 1:0] d,
+    output logic [WIDTH - 1:0] q
+);
+
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            q <= 0;
+        end else begin
+            q <= d;
+        end
+    end
+
+endmodule
+\end{lstlisting}
+
+\section{Bit Reversal with Metaprogramming}
+
+\begin{lstlisting}[language=Slip]
+module bit_reverse #(param W = 8) (din, dout) {
+    logic [W-1:0] din;
+    logic [W-1:0] dout;
+
+    comb {
+        `for (`i = 0; `i < W; `i = `i + 1) {
+            dout[W - 1 - `i] = din[`i];
+        }
+    }
+}
+\end{lstlisting}
+
+Generates:
+
+\begin{lstlisting}[language=SystemVerilog]
+module bit_reverse #(
+    parameter W = 8
+) (
+    input logic [W - 1:0] din,
+    output logic [W - 1:0] dout
+);
+
+    always_comb begin
+        dout[W - 1] = din[0];
+        dout[W - 1 - 1] = din[1];
+        dout[W - 1 - 2] = din[2];
+        dout[W - 1 - 3] = din[3];
+        dout[W - 1 - 4] = din[4];
+        dout[W - 1 - 5] = din[5];
+        dout[W - 1 - 6] = din[6];
+        dout[W - 1 - 7] = din[7];
+    end
+
+endmodule
+\end{lstlisting}
+
+Note: constant folding simplifies \code{W - 1 - 0} to \code{W - 1}, but leaves expressions like \code{W - 1 - 1} unfolded because they contain non-constant subexpressions. The downstream synthesis tool evaluates these at elaboration time.
+
+\section{State Machine with Localparams}
+
+\begin{lstlisting}[language=Slip]
+module arbiter (clk, rst_n, req, grant) {
+    logic clk;
+    logic rst_n;
+    logic [3:0] req;
+    logic [3:0] grant;
+    logic [1:0] cur;
+
+    localparam S_IDLE = 0;
+    localparam S_GNT0 = 1;
+    localparam S_GNT1 = 2;
+
+    seq (clk, neg: rst_n) {
+        if (!rst_n) {
+            cur <= S_IDLE;
+        } else {
+            case (cur) {
+                S_IDLE: {
+                    if (req[0]) cur <= S_GNT0;
+                    if (req[1]) cur <= S_GNT1;
+                }
+                S_GNT0: {
+                    if (!req[0]) cur <= S_IDLE;
+                }
+                S_GNT1: {
+                    if (!req[1]) cur <= S_IDLE;
+                }
+                default: cur <= S_IDLE;
+            }
+        }
+    }
+
+    assign grant[0] = (cur == S_GNT0);
+    assign grant[1] = (cur == S_GNT1);
+}
+\end{lstlisting}
+
+Generates:
+
+\begin{lstlisting}[language=SystemVerilog]
+module arbiter (
+    input logic clk,
+    input logic rst_n,
+    input logic [3:0] req,
+    output logic [3:0] grant
+);
+
+    localparam S_IDLE = 0;
+    localparam S_GNT0 = 1;
+    localparam S_GNT1 = 2;
+
+    logic [1:0] cur;
+
+    assign grant[0] = (cur == S_GNT0);
+    assign grant[1] = (cur == S_GNT1);
+
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            cur <= S_IDLE;
+        end else begin
+            case (cur)
+                S_IDLE: begin
+                    if (req[0]) begin
+                        cur <= S_GNT0;
+                    end
+                    if (req[1]) begin
+                        cur <= S_GNT1;
+                    end
+                end
+                S_GNT0: begin
+                    if (!req[0]) begin
+                        cur <= S_IDLE;
+                    end
+                end
+                S_GNT1: begin
+                    if (!req[1]) begin
+                        cur <= S_IDLE;
+                    end
+                end
+                default: begin
+                    cur <= S_IDLE;
+                end
+            endcase
+        end
+    end
+
+endmodule
+\end{lstlisting}
+
+\section{Arbiter with Case Statement}
+
+\begin{lstlisting}[language=Slip]
+module arbiter_case (clk, rst_n, req, grant) {
+    logic clk;
+    logic rst_n;
+    logic [3:0] req;
+    logic [3:0] grant;
+    logic [2:0] cur;
+
+    localparam S_IDLE = 0;
+    localparam S_GNT0 = 1;
+    localparam S_GNT1 = 2;
+    localparam S_GNT2 = 3;
+    localparam S_GNT3 = 4;
+
+    seq (clk, neg: rst_n) {
+        if (!rst_n) {
+            cur <= S_IDLE;
+        } else {
+            case (cur) {
+                S_IDLE: {
+                    if (req[0]) cur <= S_GNT0;
+                    if (req[1]) cur <= S_GNT1;
+                    if (req[2]) cur <= S_GNT2;
+                    if (req[3]) cur <= S_GNT3;
+                }
+                S_GNT0: {
+                    if (!req[0]) cur <= S_IDLE;
+                }
+                S_GNT1: {
+                    if (!req[1]) cur <= S_IDLE;
+                }
+                default: cur <= S_IDLE;
+            }
+        }
+    }
+
+    comb {
+        grant = 0;
+        case (cur) {
+            S_GNT0: grant[0] = 1;
+            S_GNT1: grant[1] = 1;
+            S_GNT2: grant[2] = 1;
+            S_GNT3: grant[3] = 1;
+            default: grant = 0;
+        }
+    }
+}
+\end{lstlisting}
+
+Generates:
+
+\begin{lstlisting}[language=SystemVerilog]
+module arbiter_case (
+    input logic clk,
+    input logic rst_n,
+    input logic [3:0] req,
+    output logic [3:0] grant
+);
+
+    localparam S_IDLE = 0;
+    localparam S_GNT0 = 1;
+    localparam S_GNT1 = 2;
+    localparam S_GNT2 = 3;
+    localparam S_GNT3 = 4;
+
+    logic [2:0] cur;
+
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            cur <= S_IDLE;
+        end else begin
+            case (cur)
+                S_IDLE: begin
+                    if (req[0]) begin
+                        cur <= S_GNT0;
+                    end
+                    if (req[1]) begin
+                        cur <= S_GNT1;
+                    end
+                    if (req[2]) begin
+                        cur <= S_GNT2;
+                    end
+                    if (req[3]) begin
+                        cur <= S_GNT3;
+                    end
+                end
+                S_GNT0: begin
+                    if (!req[0]) begin
+                        cur <= S_IDLE;
+                    end
+                end
+                S_GNT1: begin
+                    if (!req[1]) begin
+                        cur <= S_IDLE;
+                    end
+                end
+                default: begin
+                    cur <= S_IDLE;
+                end
+            endcase
+        end
+    end
+
+    always_comb begin
+        grant = 0;
+        case (cur)
+            S_GNT0: begin
+                grant[0] = 1;
+            end
+            S_GNT1: begin
+                grant[1] = 1;
+            end
+            S_GNT2: begin
+                grant[2] = 1;
+            end
+            S_GNT3: begin
+                grant[3] = 1;
+            end
+            default: begin
+                grant = 0;
+            end
+        endcase
+    end
+
+endmodule
+\end{lstlisting}
+
+\section{Hierarchical Design}
+
+\begin{lstlisting}[language=Slip]
+module stage #(param W = 8) (clk, rst_n, data_in, data_out) {
+    logic clk;
+    logic rst_n;
+    logic [W-1:0] data_in;
+    logic [W-1:0] data_out;
+    logic [W-1:0] reg_data;
+
+    seq (clk, neg: rst_n) {
+        if (!rst_n) {
+            reg_data <= 0;
+        } else {
+            reg_data <= data_in;
+        }
+    }
+
+    assign data_out = reg_data;
+}
+
+module pipeline (clk, rst_n, din, dout) {
+    logic clk;
+    logic rst_n;
+    logic [7:0] din;
+    logic [7:0] dout;
+    logic [7:0] stage_data [0:3];
+
+    assign stage_data[0] = din;
+
+    `for (`i = 1; `i < 3; `i = `i + 1) {
+        stage #(.W(8)) u_stage_`i {
+            .clk,
+            .rst_n,
+            .data_in(stage_data[`i - 1]),
+            .data_out(stage_data[`i])
+        };
+    }
+
+    assign dout = stage_data[2];
+}
+\end{lstlisting}
+
+Generates:
+
+\begin{lstlisting}[language=SystemVerilog]
+module stage #(
+    parameter W = 8
+) (
+    input logic clk,
+    input logic rst_n,
+    input logic [W - 1:0] data_in,
+    output logic [W - 1:0] data_out
+);
+
+    logic [W - 1:0] reg_data;
+
+    assign data_out = reg_data;
+
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            reg_data <= 0;
+        end else begin
+            reg_data <= data_in;
+        end
+    end
+
+endmodule
+
+module pipeline (
+    input logic clk,
+    input logic rst_n,
+    input logic [7:0] din,
+    output logic [7:0] dout
+);
+
+    logic [7:0] stage_data [0:3];
+
+    assign stage_data[0] = din;
+    assign dout = stage_data[2];
+
+    stage #(
+        .W(8)
+    ) u_stage_1 (
+        .clk(clk),
+        .rst_n(rst_n),
+        .data_in(stage_data[0]),
+        .data_out(stage_data[1])
+    );
+
+    stage #(
+        .W(8)
+    ) u_stage_2 (
+        .clk(clk),
+        .rst_n(rst_n),
+        .data_in(stage_data[1]),
+        .data_out(stage_data[2])
+    );
+
+endmodule
+\end{lstlisting}
+
+% ════════════════════════════════════════════════════════════════════
+\appendix
+% ════════════════════════════════════════════════════════════════════
+
+\chapter{Formal Grammar (EBNF)}
+
+\begin{lstlisting}[basicstyle=\ttfamily\footnotesize,
+  keywordstyle={},
+  frame=single,
+  backgroundcolor=\color{codebg},
+  escapechar=@]
+CompilationUnit ::= { ModuleDecl }
+
+ModuleDecl ::= "module" IDENT
+               [ "#(" ParameterList ")" ]
+               [ "(" PortList ")" ]
+               "{" { Statement } "}"
+
+ParameterList ::= ParameterDecl { "," ParameterDecl }
+ParameterDecl ::= "param" IDENT "=" Expr
+
+PortList      ::= PortItem { "," PortItem }
+PortItem      ::= IDENT [ "[" Expr [ ":" Expr ] "]" ]
+
+Statement ::= SignalDecl
+            | LocalparamDecl
+            | AssignStmt
+            | SeqBlock
+            | CombBlock
+            | InitialBlock
+            | IfStmt
+            | ForStmt
+            | CaseStmt
+            | GenForStmt
+            | GenIfStmt
+            | InstanceStmt
+            | BlockStmt
+
+SignalDecl ::= ["logic"] ["signed"] [ "[" Expr "]" ]
+               IDENT [ "[" Expr ":" Expr "]" ] ";"
+
+LocalparamDecl ::= "localparam" IDENT "=" Expr ";"
+
+AssignStmt ::= ["assign"] Lvalue "=" Expr ";"
+             | ["assign"] Lvalue CompoundOp Expr ";"
+
+CompoundOp ::= "+=" | "-=" | "*=" | "/=" | "%="
+             | "&=" | "|=" | "^=" | "<<=" | ">>="
+             | "<<<=" | ">>>="
+
+SeqBlock     ::= "seq" "(" IDENT
+                 [ "," ("pos" | "neg") ":" IDENT ] ")" BlockStmt
+CombBlock    ::= "comb" BlockStmt
+InitialBlock ::= "initial" BlockStmt
+
+IfStmt  ::= "if" "(" Expr ")" BlockStmt
+            [ "else" BlockStmt ]
+
+ForStmt ::= "for" "(" IDENT "=" Expr ";" Expr ";"
+                   ForStep ")" BlockStmt
+ForStep ::= IDENT "=" Expr
+          | IDENT CompoundOp Expr
+          | IDENT "++"
+
+CaseStmt ::= ("case" | "casez" | "casex") "(" Expr ")"
+             "{" { CaseItem } "}"
+CaseItem ::= PatternList ":" Statement
+           | "default" ":" Statement
+PatternList ::= Expr { "," Expr }
+
+GenForStmt ::= "`for" "(" TICK_IDENT "=" Expr ";" Expr ";"
+                          TICK_IDENT "=" Expr ")" BlockStmt
+GenIfStmt  ::= "`if" "(" Expr ")" BlockStmt
+                         [ "`else" BlockStmt ]
+
+InstanceStmt ::= IDENT
+                 [ "#(" NamedParam { "," NamedParam } ")" ]
+                 IDENT "{" { Connection } "}" [";"]
+
+NamedParam ::= "." IDENT "(" Expr ")"
+Connection ::= "." IDENT [ "(" Expr ")" ]
+             | STRING "=>" STRING
+
+BlockStmt ::= "{" { Statement } "}"
+Lvalue    ::= IDENT { "[" Expr "]" | "[" Expr ":" Expr "]" }
+\end{lstlisting}
+
+\textbf{Notes on the grammar:}
+\begin{itemize}
+  \item \code{TICK\_IDENT} denotes a backtick-prefixed identifier (e.g., \code{`i}).
+  \item Template identifiers (e.g., \code{data\_`i}) are formed at the lexical level by merging adjacent \code{IDENT}, \code{TICK}, and \code{TICK\_IDENT} tokens.
+  \item Expressions are parsed by a Pratt parser and support all operators listed in the operator precedence table.
+  \item Special expression forms include concatenation \code{\{a, b\}}, replication \code{\{n\{expr\}\}}, width cast \code{N'(expr)}, and set membership \code{x inside \{v1, v2, ...\}}.
+  \item Compound assignment operators are desugared at parse time into regular assignments.
+\end{itemize}
+
+\end{document}

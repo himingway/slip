@@ -39,8 +39,10 @@ def expr_to_sv(expr: Expr) -> str:
         return f"{expr_to_sv(expr.cond)} ? {expr_to_sv(expr.true_expr)} : {expr_to_sv(expr.false_expr)}"
     if isinstance(expr, IndexExpr):
         base = expr_to_sv(expr.base)
-        if expr.high is not None:
-            return f"{base}[{expr_to_sv(expr.index)}:{expr_to_sv(expr.high)}]"
+        if expr.is_slice:
+            start = expr_to_sv(expr.index) if expr.index is not None else ""
+            end = expr_to_sv(expr.high) if expr.high is not None else ""
+            return f"{base}[{start}:{end}]"
         return f"{base}[{expr_to_sv(expr.index)}]"
     if isinstance(expr, ConcatExpr):
         parts = ", ".join(expr_to_sv(p) for p in expr.parts)

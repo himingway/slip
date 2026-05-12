@@ -50,6 +50,11 @@ class CombBlock(Statement):
 
 
 @dataclass(frozen=True)
+class InitialBlock(Statement):
+    body: BlockStmt = field(default_factory=lambda: BlockStmt(SourceLocation("", 0, 0)))
+
+
+@dataclass(frozen=True)
 class IfStmt(Statement):
     cond: Expr = field(default_factory=lambda: IdentExpr(SourceLocation("", 0, 0), ""))
     then_body: BlockStmt = field(default_factory=lambda: BlockStmt(SourceLocation("", 0, 0)))
@@ -67,10 +72,35 @@ class ForStmt(Statement):
 
 
 @dataclass(frozen=True)
+class CaseItem(ASTNode):
+    patterns: tuple[Expr, ...] = ()  # empty tuple means default
+    body: BlockStmt = field(default_factory=lambda: BlockStmt(SourceLocation("", 0, 0)))
+
+
+@dataclass(frozen=True)
+class CaseStmt(Statement):
+    kind: str = "case"  # "case", "casez", "casex"
+    expr: Expr = field(default_factory=lambda: IdentExpr(SourceLocation("", 0, 0), ""))
+    items: tuple[CaseItem, ...] = ()
+
+
+@dataclass(frozen=True)
 class LocalParamDecl(Statement):
     name: str = ""
     value: Expr = field(default_factory=lambda: IntLiteralExpr(SourceLocation("", 0, 0), "0"))
 
 
+@dataclass(frozen=True)
+class FuncDef(ASTNode):
+    name: str = ""
+    params: tuple[str, ...] = ()
+    body: tuple[Statement, ...] = ()
+
+
+@dataclass(frozen=True)
+class ReturnStmt(Statement):
+    value: Expr = field(default_factory=lambda: StringLiteralExpr(SourceLocation("", 0, 0), ""))
+
+
 # Re-import needed for field defaults
-from slip.ast.expressions import IdentExpr, IntLiteralExpr  # noqa: E402
+from slip.ast.expressions import IdentExpr, IntLiteralExpr, StringLiteralExpr  # noqa: E402

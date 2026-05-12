@@ -6,7 +6,7 @@ from slip.ir.types import HDLType
 @dataclass(frozen=True)
 class HDLSignal:
     name: str
-    type_: HDLType = None
+    type_: HDLType | None = None
     array_dim: str | None = None  # SV text like "[0:15]"
 
     def decl_sv(self) -> str:

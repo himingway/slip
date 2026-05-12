@@ -9,9 +9,11 @@ from slip.ast.module import Module, Param, PortItem
 from slip.ast.statements import (
     AssignStmt,
     BlockStmt,
+    CaseStmt,
     CombBlock,
     ForStmt,
     IfStmt,
+    InitialBlock,
     LocalParamDecl,
     SeqBlock,
     SignalDecl,
@@ -20,6 +22,9 @@ from slip.ast.statements import (
 from slip.errors.semantic import SlipSemanticError
 from slip.ir import (
     HDLAssignment,
+    HDLCaseBlock,
+    HDLCaseItem,
+    HDLForLoop,
     HDLInstance,
     HDLModule,
     HDLParam,
@@ -28,7 +33,7 @@ from slip.ir import (
     HDLType,
     LogicBlock,
 )
-from slip.semantic.driver_analysis import DriverInfo, infer_port_directions
+from slip.semantic.driver_analysis import DriverInfo, detect_comb_loops, infer_port_directions
 from slip.semantic.expr_serializer import expr_to_sv
 from slip.semantic.symbol_collector import SymbolTable
 
@@ -54,7 +59,7 @@ def build(
         for p in module.ports
     ) if explicit_ports else tuple(
         _make_implicit_port(name, directions)
-        for name in symbols.ports
+        for name in directions
     )
 
     # Collect signals and process statements
@@ -97,10 +102,14 @@ def build(
                 signals.append(_make_signal(stmt))
 
     # Implicit signals: referenced names that aren't params, ports, instances, or declared signals
+    # Note: for-loop variables are excluded from implicit signal creation
+    for_vars = _collect_for_vars(module.body)
     for name in symbols.all_refs:
         if name == "_":
             continue
         if name in declared_signals or name in symbols.params or name in symbols.localparams or name in symbols.instances:
+            continue
+        if name in for_vars:
             continue
         if explicit_ports and name in symbols.ports:
             continue
@@ -123,10 +132,26 @@ def build(
             _process_seq(stmt, logic_blocks)
         elif isinstance(stmt, CombBlock):
             _process_comb(stmt, logic_blocks)
+        elif isinstance(stmt, InitialBlock):
+            _process_initial(stmt, logic_blocks)
         elif isinstance(stmt, InstanceStmt):
             _process_instance(stmt, instances)
         elif isinstance(stmt, (GenForStmt, GenIfStmt)):
             pass  # Phase 2
+
+    # BUG-014: Check for multi-driver conflicts
+    _check_multi_driver(module.body, declared_signals, symbols)
+
+    # BUG-028: Check for reset polarity inconsistency
+    _check_reset_polarity(module.body)
+
+    # BUG-015: Check for combinational loops
+    comb_loop_errors = detect_comb_loops(module)
+    if comb_loop_errors:
+        raise SlipSemanticError(
+            module.loc.file, module.loc.line, module.loc.col,
+            comb_loop_errors[0]
+        )
 
     return HDLModule(
         name=module.name,
@@ -216,6 +241,11 @@ def _process_comb(stmt: CombBlock, logic_blocks: list):
     logic_blocks.append(LogicBlock("", tuple(body_items), kind="always_comb"))
 
 
+def _process_initial(stmt: InitialBlock, logic_blocks: list):
+    body_items = _convert_block(stmt.body)
+    logic_blocks.append(LogicBlock("", tuple(body_items), kind="initial"))
+
+
 def _convert_block(block: BlockStmt) -> list:
     items: list = []
     for stmt in block.statements:
@@ -230,6 +260,10 @@ def _convert_block(block: BlockStmt) -> list:
             items.append(HDLAssignment(target_sv, value_sv, stmt.is_nonblocking))
         elif isinstance(stmt, IfStmt):
             items.append(_convert_if(stmt))
+        elif isinstance(stmt, ForStmt):
+            items.append(_convert_for(stmt))
+        elif isinstance(stmt, CaseStmt):
+            items.append(_convert_case(stmt))
     return items
 
 
@@ -239,6 +273,26 @@ def _convert_if(stmt: IfStmt) -> object:
     then_items = tuple(_convert_block(stmt.then_body))
     else_items = tuple(_convert_block(stmt.else_body)) if stmt.else_body else None
     return HDLIfBlock(cond_sv, then_items, else_items)
+
+
+def _convert_for(stmt: ForStmt) -> HDLForLoop:
+    init_sv = f"{stmt.var} = {expr_to_sv(stmt.init)}"
+    cond_sv = expr_to_sv(stmt.cond)
+    step_sv = f"{stmt.step_var} = {expr_to_sv(stmt.step)}"
+    body_items = tuple(_convert_block(stmt.body))
+    return HDLForLoop(stmt.var, init_sv, cond_sv, step_sv, body_items)
+
+
+def _convert_case(stmt: CaseStmt) -> HDLCaseBlock:
+    expr_sv = expr_to_sv(stmt.expr)
+    items = tuple(
+        HDLCaseItem(
+            patterns=tuple(expr_to_sv(p) for p in ci.patterns),
+            body=tuple(_convert_block(ci.body)),
+        )
+        for ci in stmt.items
+    )
+    return HDLCaseBlock(kind=stmt.kind, expr=expr_sv, items=items)
 
 
 _BARE_INT_RE = re.compile(r'^[0-9][0-9_]*$')
@@ -279,3 +333,106 @@ def _process_instance(stmt: InstanceStmt, instances: list):
         port_map=tuple(named_conns),
         regex_rules=tuple(regex_rules),
     ))
+
+
+def _collect_for_vars(body: tuple[Statement, ...]) -> set[str]:
+    """Collect all for-loop variable names from the module body."""
+    vars: set[str] = set()
+    for stmt in body:
+        if isinstance(stmt, ForStmt):
+            vars.add(stmt.var)
+            vars |= _collect_for_vars(stmt.body.statements)
+        elif isinstance(stmt, SeqBlock):
+            vars |= _collect_for_vars(stmt.body.statements)
+        elif isinstance(stmt, CombBlock):
+            vars |= _collect_for_vars(stmt.body.statements)
+        elif isinstance(stmt, InitialBlock):
+            vars |= _collect_for_vars(stmt.body.statements)
+        elif isinstance(stmt, IfStmt):
+            vars |= _collect_for_vars(stmt.then_body.statements)
+            if stmt.else_body:
+                vars |= _collect_for_vars(stmt.else_body.statements)
+        elif isinstance(stmt, BlockStmt):
+            vars |= _collect_for_vars(stmt.statements)
+    return vars
+
+
+def _check_multi_driver(
+    body: tuple[Statement, ...],
+    declared_signals: set[str],
+    symbols: SymbolTable,
+):
+    """Check that no signal is driven by multiple procedural blocks."""
+    # Map signal name -> block identifier
+    driven_by: dict[str, str] = {}
+
+    for stmt in body:
+        if isinstance(stmt, SeqBlock):
+            block_id = f"seq({stmt.clock})"
+            driven = _collect_driven_signals(stmt.body)
+            for sig in driven:
+                if sig in driven_by:
+                    loc = symbols.all_refs.get(sig, [None])[0]
+                    file = loc.file if loc else "<unknown>"
+                    line = loc.line if loc else 0
+                    col = loc.col if loc else 0
+                    raise SlipSemanticError(
+                        file, line, col,
+                        f"signal '{sig}' driven by multiple blocks "
+                        f"({driven_by[sig]} and {block_id})"
+                    )
+                driven_by[sig] = block_id
+        elif isinstance(stmt, CombBlock):
+            block_id = "comb"
+            driven = _collect_driven_signals(stmt.body)
+            for sig in driven:
+                if sig in driven_by:
+                    loc = symbols.all_refs.get(sig, [None])[0]
+                    file = loc.file if loc else "<unknown>"
+                    line = loc.line if loc else 0
+                    col = loc.col if loc else 0
+                    raise SlipSemanticError(
+                        file, line, col,
+                        f"signal '{sig}' driven by multiple blocks "
+                        f"({driven_by[sig]} and {block_id})"
+                    )
+                driven_by[sig] = block_id
+        # Initial blocks are excluded from multi-driver checks because
+        # they legitimately initialize signals driven by seq/comb blocks.
+
+
+def _check_reset_polarity(body: tuple[Statement, ...]):
+    """Check that each reset signal is used with consistent polarity across seq blocks."""
+    # Map reset signal name -> polarity string ('pos' or 'neg')
+    reset_polarities: dict[str, str] = {}
+    for stmt in body:
+        if isinstance(stmt, SeqBlock) and stmt.reset is not None:
+            polarity, signal = stmt.reset
+            if signal in reset_polarities:
+                prev = reset_polarities[signal]
+                if prev != polarity:
+                    raise SlipSemanticError(
+                        stmt.loc.file, stmt.loc.line, stmt.loc.col,
+                        f"reset signal '{signal}' used with conflicting polarity: "
+                        f"'{prev}' vs '{polarity}'"
+                    )
+            else:
+                reset_polarities[signal] = polarity
+
+
+def _collect_driven_signals(block: BlockStmt) -> set[str]:
+    """Collect all signal names that are assigned in a block."""
+    driven: set[str] = set()
+    for stmt in block.statements:
+        if isinstance(stmt, AssignStmt):
+            driven.add(stmt.target.name)
+        elif isinstance(stmt, IfStmt):
+            driven |= _collect_driven_signals(stmt.then_body)
+            if stmt.else_body:
+                driven |= _collect_driven_signals(stmt.else_body)
+        elif isinstance(stmt, ForStmt):
+            driven |= _collect_driven_signals(stmt.body)
+        elif isinstance(stmt, CaseStmt):
+            for ci in stmt.items:
+                driven |= _collect_driven_signals(ci.body)
+    return driven

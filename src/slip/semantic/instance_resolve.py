@@ -6,6 +6,7 @@ from pathlib import Path
 
 from slip.errors.semantic import SlipSemanticError
 from slip.ir import HDLInstance, HDLModule, HDLSignal, HDLType
+from slip.semantic.regex_funcs import evaluate_replacement
 
 
 def resolve_instances(
@@ -18,6 +19,37 @@ def resolve_instances(
     for mod in ir_modules:
         results.append(_resolve_module(mod, module_index, ip_dirs))
     return results
+
+
+def _check_required_ports(
+    inst: HDLInstance,
+    module_index: dict[str, HDLModule],
+) -> None:
+    """Check that all required (input) ports of the target module are connected.
+
+    Only checks when the target module is in the current compilation unit
+    (not external IP).  Ports explicitly marked as dangling with ``"_"`` are
+    excluded from the check.
+    """
+    if inst.target not in module_index:
+        return  # External IP — skip
+
+    target = module_index[inst.target]
+
+    connected_ports = {name for name, _sig in inst.port_map}
+    regex_ports = {name for name, _sig in inst.regex_rules}
+    all_connected = connected_ports | regex_ports
+
+    for port in target.ports:
+        if port.direction != "input":
+            continue
+        if port.name in all_connected:
+            # Port is connected (even if to "_", it's intentional)
+            continue
+        raise SlipSemanticError(
+            "<instance>", 0, 0,
+            f"unconnected input port '{port.name}' of module '{inst.target}'"
+        )
 
 
 def _resolve_module(
@@ -40,6 +72,8 @@ def _resolve_module(
                     )
 
         if not inst.regex_rules:
+            # Check required ports for explicit (non-regex) connections
+            _check_required_ports(inst, module_index)
             new_instances.append(inst)
             continue
         expanded_inst, extra_signals = _expand_regex_connections(
@@ -144,7 +178,7 @@ def _expand_regex_connections(
         matched = False
         for port_regex, signal_regex in inst.regex_rules:
             if re.fullmatch(port_regex, port_name):
-                candidate = re.sub(port_regex, signal_regex, port_name)
+                candidate = evaluate_replacement(signal_regex, port_name, port_regex)
                 if candidate in signal_names_in_scope:
                     port_map[port_name] = candidate
                     matched = True

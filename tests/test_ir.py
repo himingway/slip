@@ -85,11 +85,11 @@ class TestHDLSignal:
 class TestHDLAssignment:
     def test_to_sv_blocking(self):
         a = HDLAssignment("y", "a & b", is_nonblocking=False)
-        assert a.to_sv() == "assign y = a & b;"
+        assert a.to_sv() == "y = a & b;"
 
     def test_to_sv_nonblocking(self):
         a = HDLAssignment("q", "d", is_nonblocking=True)
-        assert a.to_sv() == "assign q <= d;"
+        assert a.to_sv() == "q <= d;"
 
     def test_to_sv_default_is_blocking(self):
         a = HDLAssignment("x", "1")

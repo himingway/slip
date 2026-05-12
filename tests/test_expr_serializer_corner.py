@@ -56,7 +56,7 @@ class TestExprToSvCornerCases:
         assert expr_to_sv(expr) == "a[3]"
 
     def test_index_expr_range(self):
-        expr = IndexExpr(LOC, IdentExpr(LOC, "a"), IntLiteralExpr(LOC, "7"), IntLiteralExpr(LOC, "0"))
+        expr = IndexExpr(LOC, IdentExpr(LOC, "a"), IntLiteralExpr(LOC, "7"), IntLiteralExpr(LOC, "0"), is_slice=True)
         assert expr_to_sv(expr) == "a[7:0]"
 
     def test_concat_expr(self):

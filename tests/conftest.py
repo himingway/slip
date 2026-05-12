@@ -26,21 +26,28 @@ def compile_source(source: str, ip_dirs: list[Path] | None = None) -> dict[str, 
     Returns a dict mapping module name -> generated SystemVerilog text.
     """
     tokens = Lexer(source, "test.slip").tokenize()
-    modules = Parser(tokens, "test.slip").parse()
-    ir = SemanticAnalyzer().analyze(modules, ip_dirs or [])
+    unit = Parser(tokens, "test.slip").parse()
+    ir = SemanticAnalyzer().analyze(unit, ip_dirs or [])
     return CodeGenerator().generate(ir)
 
 
 def compile_from_path(slip_path: Path, ip_dirs: list[Path]) -> dict[str, str]:
     """Compile a .slip file on disk, with IP directory resolution."""
     tokens = Lexer(slip_path.read_text(), str(slip_path)).tokenize()
-    modules = Parser(tokens, str(slip_path)).parse()
-    ir = SemanticAnalyzer().analyze(modules, ip_dirs)
+    unit = Parser(tokens, str(slip_path)).parse()
+    ir = SemanticAnalyzer().analyze(unit, ip_dirs)
     return CodeGenerator().generate(ir)
 
 
 def parse_source(source: str):
     """Lex + parse a Slip source string, returning the list of AST modules."""
+    tokens = Lexer(source, "test.slip").tokenize()
+    unit = Parser(tokens, "test.slip").parse()
+    return unit.modules
+
+
+def parse_unit(source: str):
+    """Lex + parse a Slip source string, returning the CompilationUnit."""
     tokens = Lexer(source, "test.slip").tokenize()
     return Parser(tokens, "test.slip").parse()
 

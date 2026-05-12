@@ -59,8 +59,9 @@ class TernaryExpr(Expr):
 @dataclass(frozen=True)
 class IndexExpr(Expr):
     base: Expr
-    index: Expr
-    high: Expr | None = None  # None = single index; set = range [high:index]
+    index: Expr | None = None  # None = omitted (e.g., s[:3])
+    high: Expr | None = None  # None = single index or slice to end (e.g., s[3:])
+    is_slice: bool = False  # True if this is a slice (has :)
 
 
 @dataclass(frozen=True)
@@ -89,3 +90,10 @@ class CallExpr(Expr):
 @dataclass(frozen=True)
 class ParenExpr(Expr):
     inner: Expr
+
+
+@dataclass(frozen=True)
+class MethodCallExpr(Expr):
+    obj: Expr
+    method: str
+    args: tuple[Expr, ...] = ()

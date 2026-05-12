@@ -10,14 +10,18 @@ from slip.ast.module import Module
 from slip.ast.statements import (
     AssignStmt,
     BlockStmt,
+    CaseItem,
+    CaseStmt,
     CombBlock,
     ForStmt,
     IfStmt,
+    InitialBlock,
     LocalParamDecl,
     SeqBlock,
     SignalDecl,
     Statement,
 )
+from slip.errors.semantic import SlipSemanticError
 
 
 def _collect_expr_idents(expr: Expr, refs: dict[str, list[SourceLocation]], loc: SourceLocation):
@@ -39,7 +43,8 @@ def _collect_expr_idents(expr: Expr, refs: dict[str, list[SourceLocation]], loc:
         _collect_expr_idents(expr.false_expr, refs, loc)
     elif isinstance(expr, IndexExpr):
         _collect_expr_idents(expr.base, refs, loc)
-        _collect_expr_idents(expr.index, refs, loc)
+        if expr.index is not None:
+            _collect_expr_idents(expr.index, refs, loc)
         if expr.high is not None:
             _collect_expr_idents(expr.high, refs, loc)
     elif isinstance(expr, ConcatExpr):
@@ -88,15 +93,28 @@ def collect(module: Module) -> SymbolTable:
     for p in module.ports:
         syms.ports.add(p.name)
 
-    # Walk body
+    # Walk body, tracking declaration locations for duplicate detection
+    decl_locs: dict[str, SourceLocation] = {}
+
     for stmt in module.body:
-        _walk_stmt(stmt, syms)
+        _walk_stmt(stmt, syms, decl_locs)
 
     return syms
 
 
-def _walk_stmt(stmt: Statement, syms: SymbolTable):
+def _check_duplicate(name: str, loc: SourceLocation, decl_locs: dict[str, SourceLocation]):
+    if name in decl_locs:
+        prev = decl_locs[name]
+        raise SlipSemanticError(
+            loc.file, loc.line, loc.col,
+            f"duplicate declaration of '{name}' (previously declared at line {prev.line})"
+        )
+
+
+def _walk_stmt(stmt: Statement, syms: SymbolTable, decl_locs: dict[str, SourceLocation]):
     if isinstance(stmt, SignalDecl):
+        _check_duplicate(stmt.name, stmt.loc, decl_locs)
+        decl_locs[stmt.name] = stmt.loc
         syms.signals.add(stmt.name)
         if stmt.width:
             _collect_expr_idents(stmt.width, syms.all_refs, stmt.loc)
@@ -118,25 +136,30 @@ def _walk_stmt(stmt: Statement, syms: SymbolTable):
         if stmt.reset:
             _collect_expr_idents(IdentExpr(stmt.loc, stmt.reset[1]), syms.all_refs, stmt.loc)
         for s in stmt.body.statements:
-            _walk_stmt(s, syms)
+            _walk_stmt(s, syms, decl_locs)
     elif isinstance(stmt, CombBlock):
         for s in stmt.body.statements:
-            _walk_stmt(s, syms)
+            _walk_stmt(s, syms, decl_locs)
+    elif isinstance(stmt, InitialBlock):
+        for s in stmt.body.statements:
+            _walk_stmt(s, syms, decl_locs)
     elif isinstance(stmt, IfStmt):
         _collect_expr_idents(stmt.cond, syms.all_refs, stmt.loc)
         for s in stmt.then_body.statements:
-            _walk_stmt(s, syms)
+            _walk_stmt(s, syms, decl_locs)
         if stmt.else_body:
             for s in stmt.else_body.statements:
-                _walk_stmt(s, syms)
+                _walk_stmt(s, syms, decl_locs)
     elif isinstance(stmt, ForStmt):
         syms.all_refs.setdefault(stmt.var, []).append(stmt.loc)
         _collect_expr_idents(stmt.init, syms.all_refs, stmt.loc)
         _collect_expr_idents(stmt.cond, syms.all_refs, stmt.loc)
         _collect_expr_idents(stmt.step, syms.all_refs, stmt.loc)
         for s in stmt.body.statements:
-            _walk_stmt(s, syms)
+            _walk_stmt(s, syms, decl_locs)
     elif isinstance(stmt, InstanceStmt):
+        _check_duplicate(stmt.inst_name, stmt.loc, decl_locs)
+        decl_locs[stmt.inst_name] = stmt.loc
         syms.instances.add(stmt.inst_name)
         for np in stmt.params:
             _collect_expr_idents(np.value, syms.all_refs, stmt.loc)
@@ -145,8 +168,17 @@ def _walk_stmt(stmt: Statement, syms: SymbolTable):
                 _collect_expr_idents(conn.signal, syms.all_refs, stmt.loc)
     elif isinstance(stmt, (GenForStmt, GenIfStmt)):
         pass  # Phase 2
+    elif isinstance(stmt, CaseStmt):
+        _collect_expr_idents(stmt.expr, syms.all_refs, stmt.loc)
+        for ci in stmt.items:
+            for p in ci.patterns:
+                _collect_expr_idents(p, syms.all_refs, stmt.loc)
+            for s in ci.body.statements:
+                _walk_stmt(s, syms, decl_locs)
     elif isinstance(stmt, LocalParamDecl):
+        _check_duplicate(stmt.name, stmt.loc, decl_locs)
+        decl_locs[stmt.name] = stmt.loc
         syms.localparams.add(stmt.name)
     elif isinstance(stmt, BlockStmt):
         for s in stmt.statements:
-            _walk_stmt(s, syms)
+            _walk_stmt(s, syms, decl_locs)

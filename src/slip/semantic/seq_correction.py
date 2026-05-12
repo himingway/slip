@@ -3,9 +3,12 @@ from slip.ast.module import Module
 from slip.ast.statements import (
     AssignStmt,
     BlockStmt,
+    CaseItem,
+    CaseStmt,
     CombBlock,
     ForStmt,
     IfStmt,
+    InitialBlock,
     SeqBlock,
     Statement,
 )
@@ -33,6 +36,8 @@ def _correct_stmt(stmt: Statement) -> Statement:
         return SeqBlock(stmt.loc, clock=stmt.clock, reset=stmt.reset, body=new_body)
     if isinstance(stmt, CombBlock):
         return stmt  # no correction for combinational blocks
+    if isinstance(stmt, InitialBlock):
+        return stmt  # no correction for initial blocks
     if isinstance(stmt, IfStmt):
         new_then = _correct_block(stmt.then_body)
         new_else = _correct_block(stmt.else_body) if stmt.else_body else None
@@ -43,6 +48,12 @@ def _correct_stmt(stmt: Statement) -> Statement:
             stmt.loc, var=stmt.var, init=stmt.init,
             cond=stmt.cond, step_var=stmt.step_var, step=stmt.step, body=new_body,
         )
+    if isinstance(stmt, CaseStmt):
+        new_items = tuple(
+            CaseItem(ci.loc, patterns=ci.patterns, body=_correct_block(ci.body))
+            for ci in stmt.items
+        )
+        return CaseStmt(stmt.loc, kind=stmt.kind, expr=stmt.expr, items=new_items)
     return stmt
 
 
@@ -66,4 +77,10 @@ def _correct_assign_in_stmt(stmt: Statement) -> Statement:
             stmt.loc, var=stmt.var, init=stmt.init,
             cond=stmt.cond, step_var=stmt.step_var, step=stmt.step, body=new_body,
         )
+    if isinstance(stmt, CaseStmt):
+        new_items = tuple(
+            CaseItem(ci.loc, patterns=ci.patterns, body=_correct_block(ci.body))
+            for ci in stmt.items
+        )
+        return CaseStmt(stmt.loc, kind=stmt.kind, expr=stmt.expr, items=new_items)
     return stmt

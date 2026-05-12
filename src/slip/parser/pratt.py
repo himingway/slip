@@ -10,6 +10,7 @@ from slip.ast.expressions import (
     IdentExpr,
     IndexExpr,
     IntLiteralExpr,
+    MethodCallExpr,
     ParenExpr,
     ReplicationExpr,
     StringLiteralExpr,
@@ -32,17 +33,23 @@ INFIX_BP: dict[TokenType, tuple[int, int]] = {
     TokenType.AMP: (12, 13),          # & bitwise
     TokenType.LT_LT: (14, 15),       # <<
     TokenType.GT_GT: (14, 15),       # >>
+    TokenType.LT_LT_LT: (14, 15),   # <<<
+    TokenType.GT_GT_GT: (14, 15),   # >>>
     TokenType.LT: (16, 17),           # <
     TokenType.GT: (16, 17),           # >
     TokenType.LE: (16, 17),           # <=
     TokenType.GT_EQ: (16, 17),       # >=
     TokenType.EQ_EQ: (18, 19),       # ==
     TokenType.BANG_EQ: (18, 19),     # !=
+    TokenType.EQ_EQ_EQ: (18, 19),   # ===
+    TokenType.BANG_EQ_EQ: (18, 19), # !==
     TokenType.PLUS: (20, 21),         # +
     TokenType.MINUS: (20, 21),       # -
     TokenType.STAR: (22, 23),         # *
     TokenType.SLASH: (22, 23),       # /
     TokenType.PERCENT: (22, 23),     # %
+    TokenType.STAR_STAR: (25, 24),   # ** (right-assoc: higher than *)
+    TokenType.INSIDE: (4, 5),        # inside (low precedence, above assignment)
 }
 
 # Postfix operators (left bp only)
@@ -50,6 +57,7 @@ POSTFIX_BP: dict[TokenType, int] = {
     TokenType.LBRACK: 26,   # indexing a[i]
     TokenType.LPAREN: 26,   # function call f(...)
     TokenType.TICK: 26,     # replication {n{expr}} -- handled in concatenation
+    TokenType.DOT: 26,      # method call expr.method(args)
 }
 
 # Prefix operator binding power
@@ -113,21 +121,33 @@ class PrattParser:
                     left = BinaryExpr(self._loc(tok), op_tok.value, left, right)
                 continue
 
-            # Postfix: indexing [expr] or [high:low]
+            # Postfix: indexing [expr] or slice [expr:expr]
             if tok.type == TokenType.LBRACK and POSTFIX_BP.get(TokenType.LBRACK, 0) >= min_bp:
                 self.advance()  # consume [
-                index = self.parse_expression(0)
+
+                # Check for omitted start (e.g., s[:3])
+                if self.peek().type == TokenType.COLON:
+                    # Omitted start: s[:expr] or s[:]
+                    index = None
+                else:
+                    index = self.parse_expression(0)
+
                 if self.peek().type == TokenType.COLON:
                     self.advance()  # consume :
-                    high = self.parse_expression(0)
+                    # Check for omitted end (e.g., s[3:])
+                    if self.peek().type == TokenType.RBRACK:
+                        high = None
+                    else:
+                        high = self.parse_expression(0)
                     right_brack = self.advance()
                     if right_brack.type != TokenType.RBRACK:
                         raise SlipSyntaxError(
                             self._filename, right_brack.line, right_brack.col,
                             f"expected ']', got '{right_brack.value}'"
                         )
-                    left = IndexExpr(self._loc(tok), left, index, high)
+                    left = IndexExpr(self._loc(tok), left, index, high, is_slice=True)
                 else:
+                    # Single index: s[expr]
                     right_brack = self.advance()
                     if right_brack.type != TokenType.RBRACK:
                         raise SlipSyntaxError(
@@ -161,6 +181,37 @@ class PrattParser:
                     )
                 continue
 
+            # Postfix: method call expr.method(args)
+            if tok.type == TokenType.DOT and POSTFIX_BP.get(TokenType.DOT, 0) >= min_bp:
+                self.advance()  # consume .
+                method_tok = self.advance()
+                if method_tok.type != TokenType.IDENT:
+                    raise SlipSyntaxError(
+                        self._filename, method_tok.line, method_tok.col,
+                        f"expected method name after '.', got '{method_tok.value}'"
+                    )
+                # Expect (args)
+                lparen = self.advance()
+                if lparen.type != TokenType.LPAREN:
+                    raise SlipSyntaxError(
+                        self._filename, lparen.line, lparen.col,
+                        f"expected '(' after method name, got '{lparen.value}'"
+                    )
+                method_args: list[Expr] = []
+                if self.peek().type != TokenType.RPAREN:
+                    method_args.append(self.parse_expression(0))
+                    while self.peek().type == TokenType.COMMA:
+                        self.advance()
+                        method_args.append(self.parse_expression(0))
+                rparen = self.advance()
+                if rparen.type != TokenType.RPAREN:
+                    raise SlipSyntaxError(
+                        self._filename, rparen.line, rparen.col,
+                        f"expected ')', got '{rparen.value}'"
+                    )
+                left = MethodCallExpr(self._loc(tok), obj=left, method=method_tok.value, args=tuple(method_args))
+                continue
+
             break
 
         return left
@@ -192,6 +243,23 @@ class PrattParser:
             parts: list[Expr] = []
             if self.peek().type != TokenType.RBRACE:
                 parts.append(self.parse_expression(0))
+                # Check for replication: {n{expr}}
+                if self.peek().type == TokenType.LBRACE:
+                    self.advance()  # consume inner {
+                    inner = self.parse_expression(0)
+                    rbrace_inner = self.advance()
+                    if rbrace_inner.type != TokenType.RBRACE:
+                        raise SlipSyntaxError(
+                            self._filename, rbrace_inner.line, rbrace_inner.col,
+                            f"expected '}}' in replication, got '{rbrace_inner.value}'"
+                        )
+                    rbrace = self.advance()
+                    if rbrace.type != TokenType.RBRACE:
+                        raise SlipSyntaxError(
+                            self._filename, rbrace.line, rbrace.col,
+                            f"expected '}}', got '{rbrace.value}'"
+                        )
+                    return ReplicationExpr(self._loc(tok), count=parts[0], inner=inner)
                 while self.peek().type == TokenType.COMMA:
                     self.advance()
                     parts.append(self.parse_expression(0))
@@ -225,13 +293,40 @@ class PrattParser:
                     )
                 return CastExpr(self._loc(tok), f"{cast_name}'", inner)
 
+        # Width cast: INT_LITERAL'(expr) e.g. 8'(x + 1)
+        if tok.type == TokenType.INT_LITERAL:
+            next_tok = self._tokens[self._pos + 1] if self._pos + 1 < len(self._tokens) else None
+            if next_tok and next_tok.type == TokenType.TICK:
+                cast_width = tok.value
+                self.advance()  # consume INT_LITERAL
+                self.advance()  # consume '
+                lparen = self.advance()
+                if lparen.type != TokenType.LPAREN:
+                    raise SlipSyntaxError(
+                        self._filename, lparen.line, lparen.col,
+                        f"expected '(' after {cast_width}', got '{lparen.value}'"
+                    )
+                inner = self.parse_expression(0)
+                rparen = self.advance()
+                if rparen.type != TokenType.RPAREN:
+                    raise SlipSyntaxError(
+                        self._filename, rparen.line, rparen.col,
+                        f"expected ')', got '{rparen.value}'"
+                    )
+                return CastExpr(self._loc(tok), f"{cast_width}'", inner)
+
         # Tick identifier (meta-variable like `i)
         if tok.type == TokenType.TICK_IDENT:
             self.advance()
             return TickIdentExpr(self._loc(tok), name=tok.value[1:])
 
-        # Identifier
+        # Identifier (reject bare 'unsigned' without tick)
         if tok.type == TokenType.IDENT:
+            if tok.value == "unsigned":
+                raise SlipSyntaxError(
+                    self._filename, tok.line, tok.col,
+                    "expected 'unsigned\\'' (cast), got bare 'unsigned'"
+                )
             self.advance()
             return IdentExpr(self._loc(tok), tok.value)
 

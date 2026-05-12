@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import warnings
+
 from slip.errors.codegen import SlipCodegenError
 from slip.ir import HDLModule
 from slip.codegen import fragment
@@ -72,7 +74,11 @@ def emit(mod: HDLModule) -> str:
                 f"pyslang validation failed:\n{report}"
             )
     except ImportError:
-        pass  # pyslang not available, skip validation
+        warnings.warn(
+            "pyslang not installed — skipping SystemVerilog validation. "
+            "Install pyslang for compile-time error checking.",
+            stacklevel=2,
+        )
 
     return sv_text
 

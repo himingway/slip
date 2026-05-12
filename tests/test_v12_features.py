@@ -23,7 +23,8 @@ from conftest import FIXTURES, IP_DIR, compile_source as _compile
 class TestLocalparamParsing:
     def test_single_localparam(self):
         tokens = Lexer("module top { localparam W = 8; }", "t.slip").tokenize()
-        mods = Parser(tokens, "t.slip").parse()
+        unit = Parser(tokens, "t.slip").parse()
+        mods = unit.modules
         from slip.ast.statements import LocalParamDecl
         lps = [s for s in mods[0].body if isinstance(s, LocalParamDecl)]
         assert len(lps) == 1
@@ -31,7 +32,8 @@ class TestLocalparamParsing:
 
     def test_comma_separated_localparams(self):
         tokens = Lexer("module top { localparam A = 1, B = 2; }", "t.slip").tokenize()
-        mods = Parser(tokens, "t.slip").parse()
+        unit = Parser(tokens, "t.slip").parse()
+        mods = unit.modules
         from slip.ast.statements import LocalParamDecl, BlockStmt
         # Comma-separated returns a BlockStmt wrapping multiple LocalParamDecl
         body = mods[0].body
@@ -44,7 +46,8 @@ class TestLocalparamParsing:
 
     def test_localparam_expression(self):
         tokens = Lexer("module top { localparam W = 4 * 2; }", "t.slip").tokenize()
-        mods = Parser(tokens, "t.slip").parse()
+        unit = Parser(tokens, "t.slip").parse()
+        mods = unit.modules
         from slip.ast.statements import LocalParamDecl
         lp = [s for s in mods[0].body if isinstance(s, LocalParamDecl)][0]
         assert lp.name == "W"
@@ -129,7 +132,8 @@ class TestLocalparamGenExpand:
             "module top (clk) { logic clk; localparam W = 8; logic [W-1:0] d; assign d = 0; }",
             "t.slip"
         ).tokenize()
-        mods = Parser(tokens, "t.slip").parse()
+        unit = Parser(tokens, "t.slip").parse()
+        mods = unit.modules
         syms = collect(mods[0])
         assert "W" in syms.localparams
         assert "W" not in syms.signals
@@ -237,7 +241,8 @@ class TestDanglingMarker:
             "module top (clk) { logic clk; inner u1 { .clk, .rst(_) }; }",
             "t.slip"
         ).tokenize()
-        mods = Parser(tokens, "t.slip").parse()
+        unit = Parser(tokens, "t.slip").parse()
+        mods = unit.modules
         syms = collect(mods[0])
         assert "_" not in syms.all_refs
 

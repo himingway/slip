@@ -229,6 +229,83 @@ class TestIRBuilder:
         assert "y_1" in sv["m"]
 
 
+# ── Reset polarity consistency (BUG-028) ────────────────────────
+
+class TestResetPolarityConsistency:
+    def test_conflicting_polarity_raises(self):
+        """Using the same reset signal with neg in one seq and pos in another must raise."""
+        src = (
+            "module m (clk, rst_n, d, q, r) { "
+            "logic [7:0] d; logic [7:0] q; logic [7:0] r; "
+            "seq (clk, neg: rst_n) { q = d; } "
+            "seq (clk, pos: rst_n) { r = d; } "
+            "} "
+        )
+        with pytest.raises(SlipSemanticError, match="conflicting polarity.*'neg'.*'pos'"):
+            compile_source(src)
+
+    def test_same_polarity_ok(self):
+        """Using the same reset signal with the same polarity in multiple seq blocks is fine."""
+        src = (
+            "module m (clk, rst_n, d, q, r) { "
+            "logic [7:0] d; logic [7:0] q; logic [7:0] r; "
+            "seq (clk, neg: rst_n) { q = d; } "
+            "seq (clk, neg: rst_n) { r = d; } "
+            "} "
+        )
+        sv = compile_source(src)
+        assert "m" in sv
+
+    def test_no_reset_ok(self):
+        """Seq blocks without resets should not interfere."""
+        src = (
+            "module m (clk, d, q) { "
+            "logic [7:0] d; logic [7:0] q; "
+            "seq (clk) { q = d; } "
+            "seq (clk) { q = d; } "
+            "} "
+        )
+        # Multi-driver would catch the double drive, but polarity check should not crash
+        # Use different signals to avoid multi-driver error
+        src = (
+            "module m (clk, d, q, r) { "
+            "logic [7:0] d; logic [7:0] q; logic [7:0] r; "
+            "seq (clk) { q = d; } "
+            "seq (clk) { r = d; } "
+            "} "
+        )
+        sv = compile_source(src)
+        assert "m" in sv
+
+    def test_different_reset_signals_ok(self):
+        """Different reset signals with different polarities are independent."""
+        src = (
+            "module m (clk, rst_n, rst, d, q, r) { "
+            "logic [7:0] d; logic [7:0] q; logic [7:0] r; "
+            "seq (clk, neg: rst_n) { q = d; } "
+            "seq (clk, pos: rst) { r = d; } "
+            "} "
+        )
+        sv = compile_source(src)
+        assert "m" in sv
+
+    def test_cross_module_independence(self):
+        """Different modules can use the same reset signal name with different polarities."""
+        src = (
+            "module a (clk, rst_n, d, q) { "
+            "logic [7:0] d; logic [7:0] q; "
+            "seq (clk, neg: rst_n) { q = d; } "
+            "} "
+            "module b (clk, rst_n, d, q) { "
+            "logic [7:0] d; logic [7:0] q; "
+            "seq (clk, pos: rst_n) { q = d; } "
+            "} "
+        )
+        sv = compile_source(src)
+        assert "a" in sv
+        assert "b" in sv
+
+
 # ── Instance resolve ────────────────────────────────────────────
 
 class TestInstanceResolve:

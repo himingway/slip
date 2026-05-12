@@ -9,4 +9,4 @@ class HDLAssignment:
 
     def to_sv(self) -> str:
         op = "<=" if self.is_nonblocking else "="
-        return f"assign {self.target} {op} {self.value};"
+        return f"{self.target} {op} {self.value};"
