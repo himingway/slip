@@ -1,6 +1,8 @@
 # Slip
 
-A minimal HDL DSL compiler that compiles `.slip` source files into synthesizable SystemVerilog.
+**S**treamlined **L**anguage for **I**C **P**rototyping — a minimal HDL DSL compiler that compiles `.slip` source files into synthesizable SystemVerilog.
+
+> *Slip* — to move smoothly and effortlessly. Write hardware descriptions that flow from intent to implementation.
 
 English | **[中文](README_CN.md)**
 

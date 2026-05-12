@@ -1,6 +1,6 @@
 # Slip 语言规范
 
-**全称**：Streamlined Integration Platform
+**全称**：Streamlined Language for IC Prototyping
 **状态**：正式发布
 **面向读者**：Slip 语言用户与编译器开发者
 **最后更新**：2026-05-11

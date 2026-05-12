@@ -1,6 +1,8 @@
 # Slip
 
-一个极简的 HDL DSL 编译器，将 `.slip` 源文件编译为可综合的 SystemVerilog。
+**S**treamlined **L**anguage for **I**C **P**rototyping — 一个极简的 HDL DSL 编译器，将 `.slip` 源文件编译为可综合的 SystemVerilog。
+
+> *Slip* — 顺滑流动。让硬件描述从意图到实现，一气呵成。
 
 **[English](README.md)** | 中文
 
