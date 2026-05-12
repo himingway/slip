@@ -63,6 +63,18 @@ def module_header(mod: HDLModule) -> str:
         port_lines = []
         indent.increase()
         for i, p in enumerate(mod.ports):
+            tags = []
+            has_width = p.type_ and p.type_.width_sv
+            if not p.declared:
+                tags.append("implicit")
+            if not has_width:
+                tags.append("no width")
+            if p.width_inferred_from:
+                tags.append(f"width from {p.width_inferred_from}")
+            if tags:
+                port_lines.append(
+                    f"{indent.indent()}// {', '.join(tags)}"
+                )
             comma = "," if i < len(mod.ports) - 1 else ""
             port_lines.append(f"{indent.indent()}{p.decl_sv()}{comma}")
         indent.decrease()

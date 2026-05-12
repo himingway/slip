@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import warnings
 from collections import deque
 from pathlib import Path
 from typing import Sequence
 
 from slip.codegen.emitter import emit
+from slip.errors.semantic import SlipSemanticError
 from slip.ir import HDLModule
 
 
@@ -55,12 +55,11 @@ def topological_sort(modules: Sequence[HDLModule]) -> list[HDLModule]:
     # Cycle detection: anything not yet sorted is part of a cycle
     remaining = [n for n in name_list if n not in set(sorted_names)]
     if remaining:
-        warnings.warn(
-            f"Dependency cycle detected among modules: {remaining}. "
-            f"Breaking cycle by emitting in original order.",
-            stacklevel=3,
+        raise SlipSemanticError(
+            "<generator>", 0, 0,
+            f"cyclic module dependency detected among: {', '.join(remaining)}. "
+            f"Cyclic instantiation is illegal in synthesizable hardware."
         )
-        sorted_names.extend(remaining)
 
     return [by_name[n] for n in sorted_names]
 

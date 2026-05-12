@@ -219,3 +219,78 @@ class TestInstanceCLI:
     def test_check_instance_regex(self):
         from slip.cli._pipeline import run_check
         run_check(FIXTURES / "instance_regex.slip", [])
+
+
+# ────────────────────────────────────────────────────────────────
+# Width inference annotation
+# ────────────────────────────────────────────────────────────────
+
+class TestWidthInference:
+    def test_explicit_connection_inherits_width(self):
+        """Port with no explicit width gets port width + annotation comment."""
+        child = r'module child (clk, data) { logic clk; logic [15:0] data; }'
+        parent = r'module parent (clk, my_data) { logic clk; logic my_data; child u1 { .clk, .data(my_data) }; }'
+        sv = compile_source(child + " " + parent)
+        text = sv["parent"]
+        assert "input logic [15:0] my_data" in text
+        assert "// width from child.data" in text
+
+    def test_explicit_connection_existing_width_preserved(self):
+        """Port with declared width keeps it, no annotation."""
+        child = r'module child (clk, data) { logic clk; logic [7:0] data; }'
+        parent = r'module parent (clk, my_data) { logic clk; logic [31:0] my_data; child u1 { .clk, .data(my_data) }; }'
+        sv = compile_source(child + " " + parent)
+        text = sv["parent"]
+        assert "input logic [31:0] my_data" in text
+        assert "width from" not in text
+
+    def test_same_name_shorthand_inherits_width(self):
+        """Same-name .port shorthand: undeclared-width port gets target width."""
+        child = r'module child (clk, bus) { logic clk; logic [11:0] bus; }'
+        parent = r'module parent (clk, bus) { logic clk; child u1 { .clk, .bus }; }'
+        sv = compile_source(child + " " + parent)
+        text = sv["parent"]
+        assert "input logic [11:0] bus" in text
+        assert "// width from child.bus" in text
+
+    def test_regex_implicit_signal_has_annotation(self):
+        """Regex-created implicit signal gets width + implicit annotation."""
+        child = r'module child (clk, data_out) { logic clk; logic [9:0] data_out; assign data_out = 0; }'
+        parent = r'module parent (clk) { logic clk; child u1 { .clk, "data_(.*)" => "bus_\1" }; }'
+        sv = compile_source(child + " " + parent)
+        text = sv["parent"]
+        assert "logic [9:0] bus_out;" in text
+        assert "implicit" in text
+        assert "width from child.data_out" in text
+
+    def test_regex_existing_signal_inherits_width(self):
+        """Pre-declared port without width gets updated via regex match."""
+        child = r'module child (clk, data_out) { logic clk; logic [13:0] data_out; assign data_out = 0; }'
+        parent = r'module parent (clk, bus_out) { logic clk; logic bus_out; child u1 { .clk, "data_(.*)" => "bus_\1" }; }'
+        sv = compile_source(child + " " + parent)
+        text = sv["parent"]
+        assert "input logic [13:0] bus_out" in text
+        assert "// width from child.data_out" in text
+
+    def test_mixed_connections_width_inference(self):
+        """Mix of named and regex connections — all get width annotations."""
+        child = r'module child (clk, a_in, b_out, c_out) { logic clk; logic [3:0] a_in; logic [5:0] b_out; logic [7:0] c_out; assign b_out = 0; assign c_out = 0; }'
+        parent = r'module parent (clk, sig_a, sig_b) { logic clk; logic sig_a; logic sig_b; child u1 { .clk, .a_in(sig_a), .b_out(sig_b), "c_(.*)" => "my_\1" }; }'
+        sv = compile_source(child + " " + parent)
+        text = sv["parent"]
+        assert "input logic [3:0] sig_a" in text
+        assert "// width from child.a_in" in text
+        assert "input logic [5:0] sig_b" in text
+        assert "// width from child.b_out" in text
+        assert "logic [7:0] my_out;" in text
+        assert "implicit" in text
+        assert "width from child.c_out" in text
+
+    def test_external_module_no_width_annotation(self):
+        """External (unresolvable) module — no annotation, width stays 1-bit."""
+        sv = compile_source(
+            "module m (clk, sig) { logic clk; logic sig; ExternalIP u1 { .clk, .port(sig) }; }"
+        )
+        text = sv["m"]
+        assert "input logic sig" in text
+        assert "width from" not in text

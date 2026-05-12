@@ -41,8 +41,10 @@ def compile_from_path(
     filelists: list[Path] | None = None,
 ) -> dict[str, str]:
     """Compile a .slip file on disk, with IP directory resolution."""
+    from slip.cli._pipeline import _resolve_includes
     tokens = Lexer(slip_path.read_text(), str(slip_path)).tokenize()
     unit = Parser(tokens, str(slip_path)).parse()
+    _resolve_includes(unit, slip_path.parent)
     ir = SemanticAnalyzer().analyze(unit, ip_dirs, filelists)
     return CodeGenerator().generate(ir)
 

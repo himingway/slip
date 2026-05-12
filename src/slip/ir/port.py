@@ -10,6 +10,8 @@ class HDLPort:
     name: str
     direction: str = "input"
     type_: HDLType | None = None
+    width_inferred_from: str | None = None  # e.g. "child.data_out"
+    declared: bool = True  # False for implicit ports
 
     def __post_init__(self):
         if self.direction not in _VALID_DIRECTIONS:

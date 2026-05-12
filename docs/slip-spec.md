@@ -3,7 +3,7 @@
 **全称**：Streamlined Language for IC Prototyping
 **状态**：正式发布
 **面向读者**：Slip 语言用户与编译器开发者
-**最后更新**：2026-05-11
+**最后更新**：2026-05-12
 
 ---
 
@@ -46,6 +46,7 @@ Slip 是一个极简硬件描述语言 (DSL) 编译器。它定义了一组高�
       │
       ▼
 [语义分析 & IR 构建]
+  ├─ Include 解析（递归合并 funcdef 和模块）
   ├─ 元编程展开（循环变量运算与常量折叠）
   ├─ 隐式端口/信号推导
   ├─ 驱动分析（剔除内部自驱动）
@@ -54,7 +55,7 @@ Slip 是一个极简硬件描述语言 (DSL) 编译器。它定义了一组高�
   ├─ 时序块赋值强制纠正（seq 块）
   ├─ 组合逻辑块识别（comb 块保持阻塞赋值）
   ├─ 位宽不匹配检查（赋值和实例端口）
-  └─ 实例化连接展开（正则映射、悬空、tie、位宽推导、必连端口检查）
+  └─ 实例化连接展开（正则映射、悬空、位宽推导、位宽注释、必连端口检查）
       │
       ▼
 设计 IR（与语法解耦）
@@ -89,7 +90,7 @@ SystemVerilog 源码
 
 ### 3.1 词法元素
 
-*   **关键字**：`module`, `param`, `localparam`, `logic`, `signed`, `assign`, `seq`, `comb`, `initial`, `pos`, `neg`, `if`, `else`, `for`, `case`, `casez`, `casex`, `default`, `inside`, `` `for ``, `` `if ``, `` `else ``
+*   **关键字**：`module`, `param`, `localparam`, `logic`, `signed`, `assign`, `seq`, `comb`, `initial`, `pos`, `neg`, `if`, `else`, `for`, `case`, `casez`, `casex`, `default`, `inside`, `include`, `` `for ``, `` `if ``, `` `else ``
 *   **特殊标识**：`_`（悬空标记）
 *   **字面量**：Verilog 风格整数常量（包括 `'0` 和 `'1`）、字符串（仅用于正则映射）
 *   **运算符**：`=`, `<=`, `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`, `<<<=`, `>>>=`, `+`, `-`, `*`, `/`, `%`, `**`, `==`, `!=`, `===`, `!==`, `<`, `>`, `<=`, `>=`, `&&`, `||`, `!`, `~`, `&`, `|`, `^`, `<<`, `>>`, `<<<`, `>>>`, `inside`, `?:`, `'`, `{}`, `[]`, `()`, `#`, `.`, `,`, `;`, `:`, `=>`, `@`
@@ -101,7 +102,11 @@ SystemVerilog 源码
 ### 3.2 语法 (EBNF)
 
 ```ebnf
-CompilationUnit ::= { ModuleDecl }
+CompilationUnit ::= { TopLevelItem }
+
+TopLevelItem ::= ModuleDecl | FuncDef | IncludeDirective
+
+IncludeDirective ::= "include" STRING ";"
 
 ModuleDecl ::= "module" IDENT
                [ "#(" ParameterList ")" ]
@@ -182,7 +187,7 @@ Expr ::= (* 表达式：由 Pratt 解析器实现，涵盖所有运算符。
 ### 3.3 语义说明
 
 *   **端口推导**：若 `PortList` 缺失（括号也省略），模块内所有被使用且非内部声明的标识符均变为端口，方向由驱动分析决定；显式端口列表则只有列表中信号是端口，未声明使用报错。
-*   **信号推导**：省略 `logic` 的信号统一为 `logic` 类型；未显式声明且未出现在端口列表的标识符，自动生成为隐式 `logic` 信号，位宽由上下文推断，无法确定时报错。
+*   **信号推导**：省略 `logic` 的信号统一为 `logic` 类型；未显式声明且未出现在端口列表的标识符，自动生成为隐式 `logic` 信号（1-bit）。生成的 SV 中带 `// implicit, no width` 注释标记，方便 review 时补全位宽。Instance 端口连接可从目标端口自动继承位宽（标注 `// width from X.Y`）。
 *   **`seq` 块**：`seq (clk, neg: rst_n) { … }` 生成 `always_ff @(posedge clk or negedge rst_n)`，块内顶层 `if(!rst_n)` 保留。**语义分析会将块内所有阻塞赋值 `=` 强制转换为 `<=`**（非 `assign` 语句），确保时序逻辑正确。
 *   **`comb` 块**：`comb { … }` 生成 `always_comb begin … end`，块内保留阻塞赋值 `=`，**不进行**非阻塞转换。
 *   **`localparam`**：模块内部常量，不能被实例化时的 `#(...)` 覆盖；可用于信号位宽、`` `if `` 条件等编译期表达式。生成 SystemVerilog 时直接输出 `localparam`。
@@ -192,6 +197,7 @@ Expr ::= (* 表达式：由 Pratt 解析器实现，涵盖所有运算符。
     - `` `for `` 的起始、终止、步长表达式及 `` `if `` 条件必须可在编译期求值为整数常量。支持整数字面量、`param`/`localparam` 引用、以及全部算术/位/关系/逻辑运算符。
     - `` `for `` 循环变量（反引号标识符，如 `` `i ``）在循环体内被当前迭代值替换，并自动进行常量折叠。详见第 7.2.1 节。
 *   **模板标识符**：标识符名中可嵌入反引号循环变量（如 `data_`i`），展开时变量替换为当前值（如 `data_3`）。
+*   **Include 指令**：`include "file.slip"` 在顶层（模块外）引入另一个 `.slip` 文件，将其中的 `defun` 函数定义和模块定义合并到当前编译单元。支持递归 include，通过绝对路径做循环检测。Include 仅用于函数库复用，不支持在模块体内部使用。
 *   **实例化与正则端口映射**：详见第 7.2.6 节。
 
 ---
@@ -533,9 +539,13 @@ module reverse #(param W=8) (clk, in, out) {
     *   `initial` → `initial begin ... end`，保留 `=`
     *   `case`/`casez`/`casex` → `case`/`casez`/`casex ... endcase`
     *   实例化 → 根据 `port_map` 生成 `.port(signal)`，若为悬空则省略该连接。
-*   模块按拓扑排序输出（定义在实例化之前）。
+*   模块按拓扑排序输出（定义在实例化之前）。循环实例化依赖报 `SlipSemanticError`（硬件中非法）。
 *   `'0` 和 `'1` 直接输出为 Verilog 全位宽常量。
 *   生成的 SystemVerilog 通过 pyslang 进行语法验证。
+*   **生成代码注释标注**：为便于 review，生成的 SV 附带以下注释：
+    - `// implicit` — 该信号/端口为编译器自动生成（非用户显式声明）
+    - `// no width` — 该信号/端口未指定位宽，默认为 1-bit
+    - `// width from X.Y` — 位宽从 instance 目标端口推断而来
 
 ---
 

@@ -359,7 +359,9 @@ def _expand_gen_for(stmt: GenForStmt, params: dict[str, int]) -> list[Statement]
     if stmt.step_var != stmt.var:
         raise SlipSemanticError(
             stmt.loc.file, stmt.loc.line, stmt.loc.col,
-            f"#for step variable '{stmt.step_var}' must match loop variable '{stmt.var}'"
+            f"#for step variable '{stmt.step_var}' must match loop variable "
+            f"'{stmt.var}'; the step expression determines the next value of "
+            f"the loop variable"
         )
     current = _eval_int(stmt.init, params, stmt.loc)
     result: list[Statement] = []

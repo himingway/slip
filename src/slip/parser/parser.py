@@ -16,6 +16,7 @@ from slip.ast.statements import (
     ForStmt,
     FuncDef,
     IfStmt,
+    IncludeStmt,
     InitialBlock,
     LocalParamDecl,
     LValue,
@@ -33,6 +34,7 @@ from slip.parser.pratt import PrattParser
 class CompilationUnit:
     modules: list[Module]
     funcdefs: list[FuncDef]
+    includes: list[IncludeStmt]
 
 # Compound assignment token types mapped to their base operator strings.
 # Desugaring: a += b  →  a = a + b
@@ -84,12 +86,15 @@ class Parser:
     def parse(self) -> CompilationUnit:
         modules: list[Module] = []
         funcdefs: list[FuncDef] = []
+        includes: list[IncludeStmt] = []
         while self.peek().type != TokenType.EOF:
             if self.peek().type == TokenType.DEFUN:
                 funcdefs.append(self._parse_funcdef())
+            elif self.peek().type == TokenType.INCLUDE:
+                includes.append(self._parse_include())
             else:
                 modules.append(self._parse_module())
-        return CompilationUnit(modules=modules, funcdefs=funcdefs)
+        return CompilationUnit(modules=modules, funcdefs=funcdefs, includes=includes)
 
     def _parse_module(self) -> Module:
         tok = self.expect(TokenType.MODULE)
@@ -123,6 +128,14 @@ class Parser:
             ports=tuple(ports),
             body=tuple(body),
         )
+
+    def _parse_include(self) -> IncludeStmt:
+        tok = self.advance()  # consume 'include'
+        path_tok = self.expect(TokenType.STRING_LITERAL)
+        self.expect(TokenType.SEMICOLON)
+        # Strip surrounding quotes
+        path = path_tok.value[1:-1] if len(path_tok.value) >= 2 else path_tok.value
+        return IncludeStmt(loc=self._loc(tok), path=path)
 
     def _parse_funcdef(self) -> FuncDef:
         tok = self.advance()  # consume 'defun'

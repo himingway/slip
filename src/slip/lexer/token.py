@@ -29,6 +29,7 @@ class TokenType(Enum):
     TICK_IDENT = auto()
     DEFUN = auto()
     RETURN = auto()
+    INCLUDE = auto()
 
     # Literals
     IDENT = auto()

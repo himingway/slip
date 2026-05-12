@@ -1,8 +1,9 @@
 """Tests for module topological sort in the code generator."""
 
-import warnings
+import pytest
 
 from slip.codegen.generator import topological_sort
+from slip.errors.semantic import SlipSemanticError
 from slip.ir import HDLInstance, HDLModule
 
 
@@ -44,20 +45,13 @@ class TestTopologicalSort:
         names = [m.name for m in result]
         assert names.index("A") < names.index("B") < names.index("C")
 
-    def test_cycle_handling(self):
-        """Cycles do not cause infinite loops; a warning is emitted."""
+    def test_cycle_raises_error(self):
+        """Cycles among local modules raise SlipSemanticError."""
         a = _mod("A", targets=("B",))
         b = _mod("B", targets=("A",))
 
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            result = topological_sort([a, b])
-
-        # Both modules must appear exactly once
-        names = [m.name for m in result]
-        assert sorted(names) == ["A", "B"]
-        # A cycle warning should have been issued
-        assert any("cycle" in str(warning.message).lower() for warning in w)
+        with pytest.raises(SlipSemanticError, match="cyclic module dependency"):
+            topological_sort([a, b])
 
     def test_external_dependency_ignored(self):
         """Instances targeting modules outside the compilation unit are ignored."""

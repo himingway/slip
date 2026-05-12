@@ -102,5 +102,11 @@ class ReturnStmt(Statement):
     value: Expr = field(default_factory=lambda: StringLiteralExpr(SourceLocation("", 0, 0), ""))
 
 
+@dataclass(frozen=True)
+class IncludeStmt(ASTNode):
+    path: str = ""
+    loc: SourceLocation = field(default_factory=lambda: SourceLocation("", 0, 0))
+
+
 # Re-import needed for field defaults
 from slip.ast.expressions import IdentExpr, IntLiteralExpr, StringLiteralExpr  # noqa: E402

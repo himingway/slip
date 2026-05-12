@@ -117,7 +117,7 @@ def build(
             continue
         if name.startswith("$"):
             continue  # system functions
-        signals.append(HDLSignal(name, HDLType()))
+        signals.append(HDLSignal(name, HDLType(), declared=False))
 
     # Process statements
     for stmt in module.body:
@@ -182,6 +182,7 @@ def _make_implicit_port(name: str, directions: dict[str, str]) -> HDLPort:
         name=name,
         direction=directions.get(name, "input"),
         type_=HDLType(),
+        declared=False,
     )
 
 

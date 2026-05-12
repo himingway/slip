@@ -67,11 +67,11 @@ class TestHDLSignal:
 
     def test_decl_sv_signed(self):
         s = HDLSignal("val", HDLType(is_signed=True))
-        assert s.decl_sv() == "logic signed val;"
+        assert "logic signed val;" in s.decl_sv()
 
     def test_decl_sv_array(self):
         s = HDLSignal("mem", HDLType(), array_dim="[0:15]")
-        assert s.decl_sv() == "logic mem [0:15];"
+        assert "logic mem [0:15];" in s.decl_sv()
 
     def test_decl_sv_width_signed(self):
         s = HDLSignal("val", HDLType(width_sv="[7:0]", is_signed=True))
@@ -79,7 +79,7 @@ class TestHDLSignal:
 
     def test_decl_sv_no_type(self):
         s = HDLSignal("sig", None)
-        assert s.decl_sv() == "logic sig;"
+        assert "logic sig;" in s.decl_sv()
 
 
 class TestHDLAssignment:

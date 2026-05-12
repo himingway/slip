@@ -29,6 +29,7 @@ from slip.ast.statements import (
     ForStmt,
     FuncDef,
     IfStmt,
+    IncludeStmt,
     InitialBlock,
     LocalParamDecl,
     LValue,
@@ -46,7 +47,7 @@ __all__ = [
     "Module", "Param", "PortItem",
     "Statement", "BlockStmt", "SignalDecl", "LValue", "AssignStmt",
     "SeqBlock", "CombBlock", "InitialBlock", "IfStmt", "ForStmt", "CaseStmt", "CaseItem",
-    "LocalParamDecl", "FuncDef", "ReturnStmt",
+    "LocalParamDecl", "FuncDef", "ReturnStmt", "IncludeStmt",
     "InstanceStmt", "NamedParam", "Connection",
     "GenForStmt", "GenIfStmt",
 ]

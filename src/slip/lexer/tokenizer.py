@@ -27,6 +27,7 @@ _KEYWORDS: dict[str, TokenType] = {
     "inside": TokenType.INSIDE,
     "defun": TokenType.DEFUN,
     "return": TokenType.RETURN,
+    "include": TokenType.INCLUDE,
 }
 
 # Regex rules: (pattern, token_type_or_None)

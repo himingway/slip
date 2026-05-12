@@ -20,7 +20,7 @@
 % ── Slip language definition ──
 \lstdefinelanguage{Slip}{
   keywords={module,param,localparam,logic,signed,assign,seq,comb,initial,
-            pos,neg,if,else,for,case,casez,casex,default,inside,begin,end},
+            pos,neg,if,else,for,case,casez,casex,default,inside,begin,end,include},
   sensitive=true,
   morecomment=[l]{//},
   morecomment=[s]{/*}{*/},
@@ -200,6 +200,62 @@ endmodule
   \item Blocking assignment in \code{seq} blocks is automatically converted to non-blocking.
   \item Compile-time metaprogramming via \slipinline{`for} and \slipinline{`if}.
   \item Template identifiers embed loop variables in signal names (e.g., \code{data\_`i}).
+  \item \code{include "file.slip"} directive for reusing \code{defun} functions and modules across files.
+  \item Generated SV annotated with \code{// implicit}, \code{// no width}, \code{// width from X.Y} for easy review.
+\end{itemize}
+
+% ──────────────────────────────────────────────────────────────────
+\chapter{Include Directive}
+% ──────────────────────────────────────────────────────────────────
+
+The \code{include} directive imports \code{defun} function definitions and module declarations from another \code{.slip} file. It must appear at the top level, outside module bodies.
+
+\section{Basic Usage}
+
+\begin{lstlisting}[language=Slip]
+include "helpers.slip";
+include "utils/common.slip";
+\end{lstlisting}
+
+Included files are lexed, parsed, and their contents merged into the compilation unit. Relative paths are resolved from the directory of the including file.
+
+\section{Example: Sharing defun Libraries}
+
+File \code{helpers.slip}:
+
+\begin{lstlisting}[language=Slip]
+defun prefix(s):
+    return "bus_" + s
+
+defun inc(n):
+    return n + 1
+\end{lstlisting}
+
+File \code{design.slip}:
+
+\begin{lstlisting}[language=Slip]
+include "helpers.slip";
+
+module top (clk) {
+    logic clk;
+    inner u1 {
+        .clk,
+        "data_(.*)" => "$prefix(\\1)",
+        "ch_(.*)" => "$inc(\\1)"
+    };
+}
+\end{lstlisting}
+
+\section{Recursive Includes}
+
+Include directives in included files are also resolved. The same file is never included twice (deduplicated by absolute path).
+
+\section{Restrictions}
+
+\begin{itemize}
+  \item \code{include} must appear at the top level --- not inside module bodies.
+  \item The included path must be a string literal. Variable-based paths are not supported.
+  \item Circular includes are detected and silently skipped.
 \end{itemize}
 
 % ──────────────────────────────────────────────────────────────────
@@ -416,7 +472,7 @@ module example (
 endmodule
 \end{lstlisting}
 
-Implicit signals used in width-specific contexts (e.g., port connections) have their width inferred. If the width cannot be determined, an error is raised.
+Implicit signals used in instance port connections automatically inherit the target port's width, annotated with \code{// width from X.Y} in the generated SV. Other implicit signals default to 1-bit and are annotated with \code{// implicit, no width} for easy review.
 
 % ──────────────────────────────────────────────────────────────────
 \chapter{Port Inference}
@@ -1635,18 +1691,44 @@ example #(.MASK(511)) u2 {};
 
 \section{Implicit Signal Width Inference}
 
-Implicit signals inherit their width from the context in which they are used:
+Implicit signals connected to instance ports automatically inherit the target port's width:
 
 \begin{lstlisting}[language=Slip]
-module top (a, b, sum) {
+module top (a, b) {
     logic [7:0] a;
     logic [7:0] b;
-    // 'sum' is implicitly created as [7:0] from port connection context
+    // 'sum' is implicit --- inherits [7:0] from adder.sum port
     adder u1 { .a, .b, .sum };
 }
 \end{lstlisting}
 
-If the width cannot be inferred, an error is raised.
+Generates:
+
+\begin{lstlisting}[language=SystemVerilog]
+    // width from adder.sum
+    logic [7:0] sum;
+\end{lstlisting}
+
+Other implicit signals (not connected to ports) default to 1-bit and are annotated with \code{// implicit, no width} in the generated output.
+
+\section{Generated Code Annotations}
+
+Slip adds review annotations to generated SystemVerilog signals and ports:
+
+\begin{table}[htbp]
+\centering
+\begin{tabular}{ll}
+\toprule
+\textbf{Annotation} & \textbf{Meaning} \\
+\midrule
+\code{// implicit} & Signal or port was auto-generated (not explicitly declared) \\
+\code{// no width} & Signal or port has no declared width (defaults to 1-bit) \\
+\code{// width from X.Y} & Width was automatically inferred from instance port \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+These annotations help identify signals that may need explicit width declarations during code review. Use \code{grep "no width" *.sv} to quickly find all un-sized signals.
 
 \section{Integer Literal Validation}
 
@@ -1665,14 +1747,17 @@ Verilog-style sized literals are validated at lex time:
 
 \begin{description}[style=nextline,leftmargin=2em]
 
-\item[\texttt{cannot override localparam 'name'}]
+\item[\texttt{cannot override localparam 'name' of module 'M' (instance 'I')}]
 Attempting to override a localparam in instance \code{\#(...)}.
 
-\item[\texttt{unconnected input port 'name'}]
-Input port not connected and not marked with \code{\_}.
+\item[\texttt{unconnected input port 'name' in instance 'I' of module 'M'}]
+Input port not connected and not marked with \code{\_}. The error includes active regex rules when applicable.
 
 \item[\texttt{unable to infer width for implicit signal 'name'}]
-Implicit signal used in a context where width cannot be determined.
+Implicit signal used in a context where width cannot be determined (legacy; now defaults to 1-bit with \code{// implicit, no width} annotation).
+
+\item[\texttt{cyclic module dependency detected among: A, B}]
+Modules have circular instantiation dependency (e.g., module A instantiates B, and B instantiates A). This is illegal in synthesizable hardware.
 
 \item[\texttt{bare integer '...' in port connection must have explicit width}]
 Bare integer used in port connection. Use a width-prefixed literal (\texttt{1'b0}) or a fill constant (\texttt{'0}).
@@ -1693,7 +1778,7 @@ Metaprogramming loop body was expanded more than 1024 times.
 Non-constant expression in \slipinline{`for}/\slipinline{`if} condition, init, or step.
 
 \item[\texttt{`for step variable '...' must match loop variable '...'}]
-Step variable differs from the declared loop variable.
+Step variable differs from the declared loop variable. The step expression determines the next value of the loop variable, so the step variable must match the loop variable.
 
 \item[\texttt{unsupported operator '...' in compile-time expression}]
 Operator not supported by the constant expression evaluator.
@@ -2147,7 +2232,11 @@ endmodule
   frame=single,
   backgroundcolor=\color{codebg},
   escapechar=@]
-CompilationUnit ::= { ModuleDecl }
+CompilationUnit ::= { TopLevelItem }
+
+TopLevelItem ::= ModuleDecl | FuncDef | IncludeDirective
+
+IncludeDirective ::= "include" STRING ";"
 
 ModuleDecl ::= "module" IDENT
                [ "#(" ParameterList ")" ]

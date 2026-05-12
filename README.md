@@ -15,7 +15,8 @@ Every Slip construct maps directly to a SystemVerilog equivalent. The generated 
 ## Features
 
 - **Inferred port directions** — no `input`/`output` keywords; directions are derived from signal usage
-- **Implicit signal declarations** — referenced names that aren't ports or instances become `logic` signals automatically
+- **Implicit signal declarations** — referenced names that aren't ports or instances become `logic` signals automatically, annotated with `// implicit, no width` for easy review
+- **Instance port width inference** — signals connected to instance ports automatically inherit the target port's width, annotated with `// width from X.Y` in generated SV
 - **Sequential blocks** — `seq (clk, neg: rst_n) { ... }` generates `always_ff` with automatic blocking-to-nonblocking conversion
 - **Combinational blocks** — `comb { ... }` generates `always_comb`
 - **Initial blocks** — `initial { ... }` generates `initial begin ... end` for testbenches and initialization
@@ -28,12 +29,13 @@ Every Slip construct maps directly to a SystemVerilog equivalent. The generated 
 - **Full operator set** — arithmetic shifts (`<<<`/`>>>`), exponentiation (`**`), case equality (`===`/`!==`), width cast (`8'(expr)`)
 - **Replication syntax** — `{4{1'b0}}` generates correct SystemVerilog replication
 - **Module instantiation** — concise syntax with same-name shorthand (`.clk`), explicit connections, and regex port mapping
+- **Include directive** — `include "helpers.slip"` imports `defun` functions and modules from other Slip files with recursive resolution and cycle detection
 - **IP integration** — automatic port/parameter reflection of external SystemVerilog IP via pyslang, with VCS filelist (`-f`) support and recursive directory scanning
 - **Parameter and localparam** — module-level parameters with override, body-level localparams without
 - **Multi-driver detection** — signals driven by multiple `seq`/`comb` blocks raise a compile error
 - **Combinational loop detection** — feedback loops inside `comb` blocks are detected and reported as errors
 - **Width mismatch warnings** — assignment and instance port width mismatches are reported as warnings
-- **Module topological sort** — modules are emitted in dependency order (definitions before instantiations)
+- **Module topological sort** — modules are emitted in dependency order; cyclic dependencies raise a compile error
 - **Constant validation** — bare integers in port connections are rejected; integer literal radix is validated
 - **Dangling port marker** — `.rst_n(_)` leaves a port intentionally unconnected
 
@@ -105,6 +107,21 @@ endmodule
 ```
 
 ## Syntax Reference
+
+### Include Directive
+
+```slip
+include "helpers.slip";     // import defun functions and modules from another file
+include "utils/common.slip"; // relative paths resolved from the including file
+
+module top (clk, rst_n) {
+    logic clk;
+    logic rst_n;
+    inner u1 { .clk, .rst_n, "data_(.*)" => "$prefix(\\1)" };
+}
+```
+
+Include statements must appear at the top level (outside module bodies). Included files are lexed and parsed, and their `defun` functions and module definitions are merged into the compilation unit. Recursive includes are supported; cycles are detected via absolute path deduplication.
 
 ### Module Declaration
 
@@ -344,11 +361,12 @@ Source (.slip)
 │  Lexer  │───▶│  Parser │───▶│ Semantic Analysis │───▶│ Codegen  │
 └─────────┘    └─────────┘    └───────────────────┘    └──────────┘
                                    │
+                                   ├── Include resolution
                                    ├── Metaprogramming expansion
                                    ├── Symbol collection
                                    ├── Driver analysis
                                    ├── Assignment correction
-                                   └── Instance resolution
+                                   └── Instance resolution (with width inference)
                                                 │
                                                 ▼
                                        SystemVerilog (.sv)
@@ -356,8 +374,8 @@ Source (.slip)
 
 1. **Lexer** — regex-based tokenizer with post-lex merging for compound tokens
 2. **Parser** — recursive-descent for statements, Pratt parser for expressions
-3. **Semantic Analysis** — metaprogramming expansion, symbol collection, driver analysis, combinational loop detection, assignment correction, width mismatch checking, IR building, instance resolution
-4. **Codegen** — IR-to-SystemVerilog emission with pyslang validation
+3. **Semantic Analysis** — include resolution, metaprogramming expansion, symbol collection, driver analysis, combinational loop detection, assignment correction, width mismatch checking, IR building, instance resolution with port width inference
+4. **Codegen** — IR-to-SystemVerilog emission with pyslang validation and review annotations (`// implicit`, `// no width`, `// width from X.Y`)
 
 ## Running Tests
 
