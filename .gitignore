@@ -45,3 +45,7 @@ Thumbs.db
 *.fls
 *.fdb_latexmk
 texput.log
+
+# IEEE standard documents (copyrighted; obtain from IEEE)
+docs/1364-2005.pdf
+docs/1800-2017.pdf

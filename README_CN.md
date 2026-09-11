@@ -6,6 +6,8 @@
 
 **[English](README.md)** | 中文 | **[用户手册 (PDF)](docs/tex/user-manual.pdf)**
 
+> 开发过程中参考的 IEEE 标准文档（1364-2005、1800-2017）不再随仓库分发，请从 [IEEE Xplore](https://ieeexplore.ieee.org/) 获取。
+
 ## 概述
 
 Slip 是一种简洁的硬件描述语言，本质上是 SystemVerilog 的语法糖。它为常见的硬件设计模式提供了精简的语法——信号声明、组合与时序逻辑、带有正则端口映射的模块实例化、编译时元编程——同时生成干净、可读的 SystemVerilog 输出。
@@ -45,61 +47,54 @@ module pipeline #(param STAGES = 3, param WIDTH = 8) (clk, rst_n, din, dout) {
     logic rst_n;
     logic [WIDTH-1:0] din;
     logic [WIDTH-1:0] dout;
-
-    // 编译时循环展开，带模板标识符
-    `for (`i = 0; `i < STAGES; `i = `i + 1) {
-        logic [WIDTH-1:0] stage_`i;
-    }
+    logic [WIDTH-1:0] stage [0:STAGES-1];   // 非压缩数组表示各级流水线
 
     seq (clk, neg: rst_n) {
         if (!rst_n) {
+            // 编译时循环展开，带模板标识符
             `for (`i = 0; `i < STAGES; `i = `i + 1) {
-                stage_`i = 0;
+                stage[`i] = 0;
             }
         } else {
-            stage_0 = din;
+            stage[0] = din;
             `for (`i = 1; `i < STAGES; `i = `i + 1) {
-                stage_`i = stage_`i - 1;
+                stage[`i] = stage[`i - 1];   // 模板变量出现在下标中
             }
         }
     }
 
-    assign dout = stage_2;
+    assign dout = stage[STAGES-1];
 }
 ```
 
-生成：
+生成（`seq` 内的阻塞赋值自动转为非阻塞，因此每一级都采到时钟沿之前的值，构成真正的移位流水线）：
 
 ```systemverilog
-module pipeline
-    #(
-        parameter STAGES = 3,
-        parameter WIDTH = 8
-    )
-(
+module pipeline #(
+    parameter STAGES = 3,
+    parameter WIDTH = 8
+) (
     input logic clk,
     input logic rst_n,
-    input logic [WIDTH-1:0] din,
-    output logic [WIDTH-1:0] dout
+    input logic [WIDTH - 1:0] din,
+    output logic [WIDTH - 1:0] dout
 );
 
-    logic [WIDTH-1:0] stage_0;
-    logic [WIDTH-1:0] stage_1;
-    logic [WIDTH-1:0] stage_2;
+    logic [WIDTH - 1:0] stage [0:STAGES - 1];
+
+    assign dout = stage[STAGES - 1];
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            stage_0 <= 0;
-            stage_1 <= 0;
-            stage_2 <= 0;
+            stage[0] <= 0;
+            stage[1] <= 0;
+            stage[2] <= 0;
         end else begin
-            stage_0 <= din;
-            stage_1 <= stage_0;
-            stage_2 <= stage_1;
+            stage[0] <= din;
+            stage[1] <= stage[0];
+            stage[2] <= stage[1];
         end
     end
-
-    assign dout = stage_2;
 
 endmodule
 ```
@@ -298,7 +293,7 @@ child u1 {
 
 ```bash
 # 克隆
-git clone https://github.com/user/slip.git
+git clone https://github.com/himingway/slip.git
 cd slip
 
 # 安装依赖（需要 uv）

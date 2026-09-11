@@ -4,6 +4,29 @@ Found during test suite development. Each bug has a corresponding test in `tests
 
 ---
 
+## Review Follow-up (2026-09)
+
+A full-project review found and fixed a further set of issues beyond the
+original list. The most significant:
+
+| Area | Issue | Fix |
+|------|-------|-----|
+| Parser | Operator precedence table disagreed with IEEE 1800-2017 (equality above relational above shifts); serializer emitted flat text | `INFIX_BP` reordered to match the standard; `expr_serializer` now parenthesizes by precedence |
+| IR / codegen | Port declarations silently dropped `signed` and unpacked-array dimensions | `HDLPort` carries `array_dim`; `decl_sv()` emits the qualifier |
+| Semantic | Blocking→nonblocking conversion broke loop accumulators silently | Conversion stays unconditional (documented behaviour); self-referential assignments that observe an earlier write now warn |
+| Semantic | Module-level `if`/`for`/`case` and block-nested declarations were silently dropped | Now rejected with a targeted error / handled |
+| Semantic | Port direction inferred `input` for signals driven by an instance output | Direction inference accounts for instance connections |
+| Semantic | Unknown instance target passed silently with named-only connections | Now a hard error pointing at `-ip`/`-f` |
+| Semantic | `defun` evaluated bodies with full builtins (arbitrary code execution) | Sandboxed globals + method/function allowlists |
+| Semantic | Comb-loop detection missed cross-block loops and misfired on init-then-accumulate | Path-aware analysis over the whole module |
+| Semantic | Multi-driver check ignored top-level assigns and rejected disjoint bit drivers | Bit-range-aware check covering continuous assignments |
+| Integration | Filelist `+define+` parsed but never applied; batch pyslang parse always fell back | `predefines` assigned (not appended); `fromFiles` called with the correct signature |
+| Integration | Missing/unreadable IP files silently produced an empty index | Hard error for missing filelist entries; warnings for duplicates and unreflectable modules |
+| CLI | `slip check` skipped codegen, so it passed files `slip build` rejected | `run_check` runs the full pipeline without writing output |
+| Docs | README quick example documented output the language could not produce | Replaced with the array-based shift register, pinned by `tests/test_docs/` |
+
+---
+
 ## Bug Status Summary
 
 | ID | Description | Severity | Status |
@@ -33,7 +56,7 @@ Found during test suite development. Each bug has a corresponding test in `tests
 | BUG-023 | Bare ident fallthrough errors | MEDIUM | BY DESIGN |
 | BUG-024 | No duplicate declaration detection | MEDIUM | **FIXED** |
 | BUG-025 | No port width mismatch check | MEDIUM | **FIXED** |
-| BUG-026 | Instance target not validated | MEDIUM | BY DESIGN |
+| BUG-026 | Instance target not validated | MEDIUM | **FIXED** |
 | BUG-027 | `inout` never inferred | MEDIUM | BY DESIGN |
 | BUG-028 | Reset polarity inconsistency | MEDIUM | **FIXED** |
 | BUG-029 | `always_latch` spurious sensitivity | MEDIUM | **FIXED** |
@@ -292,13 +315,18 @@ Width mismatch detection added for both assignments and instance port connection
 
 ---
 
-### BUG-026: Non-regex instance target module existence not validated — **BY DESIGN**
+### BUG-026: Non-regex instance target module existence not validated — **FIXED**
 
 **Severity:** MEDIUM
 **File:** `src/slip/semantic/instance_resolve.py`
-**Test:** `TestInstanceModuleExistence`
+**Test:** `TestInstanceModuleExistence`, `tests/test_instance.py::TestWidthInference`
 
-External IP modules are allowed at the semantic level. pyslang validates at codegen time.
+Instance targets are now validated against the compilation unit and the
+IP index built from `-ip`/`-f`. An unresolvable target raises
+`SlipSemanticError` with the instance's source location and a hint to
+pass `-ip`/`-f` for external IP. This closes the inconsistency where a
+typo'd module name was only reported when the instance also used regex
+port mapping.
 
 ---
 

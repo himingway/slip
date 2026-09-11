@@ -2,20 +2,37 @@
 name = "slip-hdl"
 version = "0.1.0"
 description = "A minimal hardware description language DSL compiler targeting SystemVerilog"
+readme = "README.md"
+license = { file = "LICENSE" }
 requires-python = ">=3.10"
 dependencies = [
-    "pyslang>=10.0",
+    # pyslang follows the slang C++ compiler's major versions with breaking
+    # API changes; pin the major so an upgrade is a deliberate choice.
+    "pyslang>=10.0,<11",
     "click>=8.0",
 ]
-
-[project.optional-dependencies]
-dev = [
-    "pytest>=8.0",
-    "pytest-cov>=5.0",
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Compilers",
+    "Topic :: Scientific/Engineering :: Electronic Design Automation (EDA)",
 ]
+
+[project.urls]
+Homepage = "https://github.com/himingway/slip"
+Repository = "https://github.com/himingway/slip"
 
 [project.scripts]
 slip = "slip.cli.main:main"
+
+# Development dependencies live in [dependency-groups] (see below); the
+# legacy [project.optional-dependencies] block was removed so there is a
+# single source of truth for the dev toolchain.
 
 [build-system]
 requires = ["hatchling"]
@@ -27,8 +44,9 @@ packages = ["src/slip"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "--tb=short"
-markers = [
-    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+filterwarnings = [
+    # Width-mismatch warnings are expected while compiling fixtures
+    "default::UserWarning",
 ]
 
 [dependency-groups]

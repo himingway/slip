@@ -585,7 +585,15 @@ Generates (blocking \code{=} converted to non-blocking \code{<=}):
     end
 \end{lstlisting}
 
-A warning is emitted when this conversion occurs.
+The conversion is unconditional. A warning is emitted for the
+assignments whose meaning the conversion changes: those that read their
+own previous value (a self-referencing statement such as
+\code{for (...) \{ sum = sum + b; \}}, or a variable written and then read
+again on the same path). Under non-blocking semantics the read observes
+the pre-clock value, so such code should be restructured (or moved to a
+\code{comb} block) if the updated value was intended. Standard register
+idioms --- shift registers over arrays, state machines, gated counters
+--- convert silently.
 
 % ──────────────────────────────────────────────────────────────────
 \chapter{Combinational Logic (\code{comb})}

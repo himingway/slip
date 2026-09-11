@@ -6,6 +6,8 @@
 
 English | **[中文](README_CN.md)** | **[User Manual (PDF)](docs/tex/user-manual.pdf)**
 
+> The IEEE standard documents referenced during development (1364-2005, 1800-2017) are not distributed with this repository — obtain them from [IEEE Xplore](https://ieeexplore.ieee.org/).
+
 ## Overview
 
 Slip is a compact hardware description language designed as syntactic sugar over SystemVerilog. It provides a streamlined syntax for common hardware design patterns — signal declarations, combinational and sequential logic, module instantiation with regex port mapping, and compile-time metaprogramming — while generating clean, human-readable SystemVerilog output.
@@ -32,9 +34,9 @@ Every Slip construct maps directly to a SystemVerilog equivalent. The generated 
 - **Include directive** — `include "helpers.slip"` imports `defun` functions and modules from other Slip files with recursive resolution and cycle detection
 - **IP integration** — automatic port/parameter reflection of external SystemVerilog IP via pyslang, with VCS filelist (`-f`) support and recursive directory scanning
 - **Parameter and localparam** — module-level parameters with override, body-level localparams without
-- **Multi-driver detection** — signals driven by multiple `seq`/`comb` blocks raise a compile error
+- **Multi-driver detection** — a signal driven by multiple `seq`/`comb` blocks or continuous assignments raises a compile error (disjoint bit-ranges are allowed)
 - **Combinational loop detection** — feedback loops inside `comb` blocks are detected and reported as errors
-- **Width mismatch warnings** — assignment and instance port width mismatches are reported as warnings
+- **Width mismatch warnings** — assignment and instance port width mismatches are reported as warnings; unsized constants are range-checked against the target instead of assumed 32-bit
 - **Module topological sort** — modules are emitted in dependency order; cyclic dependencies raise a compile error
 - **Constant validation** — bare integers in port connections are rejected; integer literal radix is validated
 - **Dangling port marker** — `.rst_n(_)` leaves a port intentionally unconnected
@@ -47,61 +49,55 @@ module pipeline #(param STAGES = 3, param WIDTH = 8) (clk, rst_n, din, dout) {
     logic rst_n;
     logic [WIDTH-1:0] din;
     logic [WIDTH-1:0] dout;
-
-    // Compile-time loop unrolling with template identifiers
-    `for (`i = 0; `i < STAGES; `i = `i + 1) {
-        logic [WIDTH-1:0] stage_`i;
-    }
+    logic [WIDTH-1:0] stage [0:STAGES-1];   // unpacked array of stages
 
     seq (clk, neg: rst_n) {
         if (!rst_n) {
+            // Compile-time loop unrolling with template identifiers
             `for (`i = 0; `i < STAGES; `i = `i + 1) {
-                stage_`i = 0;
+                stage[`i] = 0;
             }
         } else {
-            stage_0 = din;
+            stage[0] = din;
             `for (`i = 1; `i < STAGES; `i = `i + 1) {
-                stage_`i = stage_`i - 1;
+                stage[`i] = stage[`i - 1];   // template variable in an index
             }
         }
     }
 
-    assign dout = stage_2;
+    assign dout = stage[STAGES-1];
 }
 ```
 
-Generates:
+Generates (all blocking assignments in `seq` become nonblocking, so every
+stage samples the pre-clock value — a true shift register):
 
 ```systemverilog
-module pipeline
-    #(
-        parameter STAGES = 3,
-        parameter WIDTH = 8
-    )
-(
+module pipeline #(
+    parameter STAGES = 3,
+    parameter WIDTH = 8
+) (
     input logic clk,
     input logic rst_n,
-    input logic [WIDTH-1:0] din,
-    output logic [WIDTH-1:0] dout
+    input logic [WIDTH - 1:0] din,
+    output logic [WIDTH - 1:0] dout
 );
 
-    logic [WIDTH-1:0] stage_0;
-    logic [WIDTH-1:0] stage_1;
-    logic [WIDTH-1:0] stage_2;
+    logic [WIDTH - 1:0] stage [0:STAGES - 1];
+
+    assign dout = stage[STAGES - 1];
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            stage_0 <= 0;
-            stage_1 <= 0;
-            stage_2 <= 0;
+            stage[0] <= 0;
+            stage[1] <= 0;
+            stage[2] <= 0;
         end else begin
-            stage_0 <= din;
-            stage_1 <= stage_0;
-            stage_2 <= stage_1;
+            stage[0] <= din;
+            stage[1] <= stage[0];
+            stage[2] <= stage[1];
         end
     end
-
-    assign dout = stage_2;
 
 endmodule
 ```
@@ -300,7 +296,7 @@ Supported: full Python expressions including string concatenation (`+`), string 
 
 ```bash
 # Clone
-git clone https://github.com/user/slip.git
+git clone https://github.com/himingway/slip.git
 cd slip
 
 # Install dependencies (requires uv)
@@ -327,7 +323,7 @@ slip build -f ip.f -ip ip_dir design.slip # filelist + directory (combined)
 ### Check
 
 ```bash
-slip check design.slip                    # validate without generating output
+slip check design.slip                    # full pipeline (incl. SV validation), nothing written
 slip check -ip ip_dir design.slip         # with IP directory
 slip check -f ip.f design.slip            # with filelist
 ```
