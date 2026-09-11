@@ -23,40 +23,42 @@ from slip.errors.syntax import SlipSyntaxError
 from slip.lexer.token import Token, TokenType
 
 # Binding power pairs: (left_bp, right_bp)
-# Higher = tighter binding. Right-associative: right_bp < left_bp.
+# Higher = tighter binding. Left-associative: right_bp > left_bp.
+# Mirrors IEEE 1800-2017 Table 11-2 (tightest to loosest):
+#   unary > ** > * / % > + - > shifts > relational (incl. inside) > equality
+#   > & > ^ > | > && > || > ?:
 INFIX_BP: dict[TokenType, tuple[int, int]] = {
-    TokenType.QUESTION: (2, 1),       # ternary, right-assoc
+    TokenType.QUESTION: (2, 1),       # ternary, right-assoc, loosest
     TokenType.PIPE_PIPE: (4, 5),      # ||
     TokenType.AMP_AMP: (6, 7),        # &&
     TokenType.PIPE: (8, 9),           # | bitwise
     TokenType.CARET: (10, 11),        # ^
     TokenType.AMP: (12, 13),          # & bitwise
-    TokenType.LT_LT: (14, 15),       # <<
-    TokenType.GT_GT: (14, 15),       # >>
-    TokenType.LT_LT_LT: (14, 15),   # <<<
-    TokenType.GT_GT_GT: (14, 15),   # >>>
+    TokenType.EQ_EQ: (14, 15),       # ==
+    TokenType.BANG_EQ: (14, 15),     # !=
+    TokenType.EQ_EQ_EQ: (14, 15),   # ===
+    TokenType.BANG_EQ_EQ: (14, 15), # !==
     TokenType.LT: (16, 17),           # <
     TokenType.GT: (16, 17),           # >
     TokenType.LE: (16, 17),           # <=
     TokenType.GT_EQ: (16, 17),       # >=
-    TokenType.EQ_EQ: (18, 19),       # ==
-    TokenType.BANG_EQ: (18, 19),     # !=
-    TokenType.EQ_EQ_EQ: (18, 19),   # ===
-    TokenType.BANG_EQ_EQ: (18, 19), # !==
+    TokenType.INSIDE: (16, 17),      # inside (relational row)
+    TokenType.LT_LT: (18, 19),       # <<
+    TokenType.GT_GT: (18, 19),       # >>
+    TokenType.LT_LT_LT: (18, 19),   # <<<
+    TokenType.GT_GT_GT: (18, 19),   # >>>
     TokenType.PLUS: (20, 21),         # +
     TokenType.MINUS: (20, 21),       # -
     TokenType.STAR: (22, 23),         # *
     TokenType.SLASH: (22, 23),       # /
     TokenType.PERCENT: (22, 23),     # %
-    TokenType.STAR_STAR: (25, 24),   # ** (right-assoc: higher than *)
-    TokenType.INSIDE: (4, 5),        # inside (low precedence, above assignment)
+    TokenType.STAR_STAR: (23, 24),   # ** left-assoc, below unary prefix (PREFIX_BP)
 }
 
 # Postfix operators (left bp only)
 POSTFIX_BP: dict[TokenType, int] = {
     TokenType.LBRACK: 26,   # indexing a[i]
     TokenType.LPAREN: 26,   # function call f(...)
-    TokenType.TICK: 26,     # replication {n{expr}} -- handled in concatenation
     TokenType.DOT: 26,      # method call expr.method(args)
 }
 
@@ -241,6 +243,13 @@ class PrattParser:
         if tok.type == TokenType.LBRACE:
             self.advance()
             parts: list[Expr] = []
+            if self.peek().type == TokenType.RBRACE:
+                rbrace = self.advance()
+                raise SlipSyntaxError(
+                    self._filename, rbrace.line, rbrace.col,
+                    "empty concatenation '{}' is not allowed; "
+                    "it has no width and no SystemVerilog equivalent"
+                )
             if self.peek().type != TokenType.RBRACE:
                 parts.append(self.parse_expression(0))
                 # Check for replication: {n{expr}}

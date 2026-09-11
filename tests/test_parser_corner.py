@@ -155,3 +155,53 @@ class TestErrorRecovery:
     def test_missing_closing_brace(self):
         with pytest.raises(SlipSyntaxError):
             parse_source("module m { assign y = 1; ")
+
+
+class TestEmptyConcatenation:
+    """'{}' is rejected at parse time with a real source location."""
+
+    def test_empty_concat_rejected(self):
+        from slip.errors.syntax import SlipSyntaxError
+        with pytest.raises(SlipSyntaxError, match="empty concatenation"):
+            parse_module("module m (y) { logic y; assign y = {}; }")
+
+    def test_empty_concat_location(self):
+        from slip.errors.syntax import SlipSyntaxError
+        with pytest.raises(SlipSyntaxError) as e:
+            parse_module("module m (y) { logic y; assign y = {}; }")
+        assert e.value.line == 1
+        assert e.value.col > 0
+
+
+class TestAssignKeywordCompound:
+    """`assign x += y;` desugars like the bare `x += y;` form."""
+
+    def test_assign_compound_parses(self):
+        mod = parse_module(
+            "module m (clk, x, a) { logic [7:0] x; logic [7:0] a; "
+            "seq (clk) { assign x += a; } }"
+        )
+        from slip.ast.statements import SeqBlock
+        seq = next(s for s in mod.body if isinstance(s, SeqBlock))
+        stmt = seq.body.statements[0]
+        assert stmt.value.op == "+"
+        assert stmt.value.left.name == "x"
+
+    def test_assign_compound_inside_seq_is_nonblocking(self):
+        from conftest import compile_source
+        sv = compile_source(
+            "module m (clk, x, a) { logic [7:0] x; logic [7:0] a; "
+            "seq (clk) { assign x += a; } }"
+        )
+        assert "x <= x + a" in sv["m"]
+
+    def test_assign_compound_all_ops(self):
+        from conftest import parse_source
+        for op, base in [("+=", "+"), ("-=", "-"), ("&=", "&"), ("<<=", "<<")]:
+            mod = parse_module(
+                f"module m (clk, x, a) {{ logic [7:0] x; logic [7:0] a; "
+                f"seq (clk) {{ assign x {op} a; }} }}"
+            )
+            from slip.ast.statements import SeqBlock
+            seq = next(s for s in mod.body if isinstance(s, SeqBlock))
+            assert seq.body.statements[0].value.op == base

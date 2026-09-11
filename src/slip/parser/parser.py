@@ -321,7 +321,6 @@ class Parser:
                 self.advance()
                 second = self._parse_expr()
                 # For width, store as a range expression wrapped in a binary expr
-                from slip.ast.expressions import BinaryExpr
                 width = BinaryExpr(first.loc, ":", first, second)
             else:
                 width = first
@@ -353,10 +352,20 @@ class Parser:
         tok = self.advance()  # consume 'assign'
         target = self._parse_lvalue()
         eq = self.advance()
+
+        # Compound assignment: `assign x += y;` desugars like the bare form
+        if eq.type in _COMPOUND_OPS:
+            value = BinaryExpr(
+                self._loc(eq), _COMPOUND_OPS[eq.type],
+                self._lvalue_to_expr(target), self._parse_expr(),
+            )
+            self.expect(TokenType.SEMICOLON)
+            return AssignStmt(self._loc(tok), target=target, value=value, is_nonblocking=False)
+
         if eq.type not in (TokenType.EQ, TokenType.LE):
             raise SlipSyntaxError(
                 self._filename, eq.line, eq.col,
-                f"expected '=' or '<=' in assignment, got '{eq.value}'"
+                f"expected '=', '<=' or a compound assignment in assignment, got '{eq.value}'"
             )
         is_nb = eq.type == TokenType.LE
         value = self._parse_expr()
@@ -653,16 +662,16 @@ class Parser:
         )
 
     def _parse_block(self) -> BlockStmt:
-        self.expect(TokenType.LBRACE)
+        lbrace = self.expect(TokenType.LBRACE)
         stmts = self._parse_statements_until(TokenType.RBRACE)
         self.expect(TokenType.RBRACE)
-        return BlockStmt(SourceLocation(self._filename, 0, 0), statements=tuple(stmts))
+        return BlockStmt(self._loc(lbrace), statements=tuple(stmts))
 
     def _parse_stmt_or_block(self) -> BlockStmt:
         if self.peek().type == TokenType.LBRACE:
             return self._parse_block()
         stmt = self._parse_statement()
-        return BlockStmt(SourceLocation(self._filename, 0, 0), statements=(stmt,))
+        return BlockStmt(stmt.loc, statements=(stmt,))
 
     def _parse_expr(self) -> Expr:
         pratt = PrattParser(self._tokens, self._pos, self._filename)

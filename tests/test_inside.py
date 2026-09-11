@@ -47,14 +47,14 @@ class TestInsideParser:
         assert len(stmt.value.right.parts) == 1
 
     def test_inside_with_comparison(self):
-        """Parse 'a == b inside {1, 2}' - inside has lower precedence than ==."""
+        """'a == b inside {1, 2}' groups as a == (b inside {1, 2}) per IEEE 1800."""
         mod = parse_module("module m (a, b, y) { assign y = a == b inside {1, 2}; }")
         stmt = mod.body[0]
-        # Inside has lower precedence than ==, so this parses as (a == b) inside {1, 2}
+        # inside sits on the relational row, tighter than equality
         assert isinstance(stmt.value, BinaryExpr)
-        assert stmt.value.op == "inside"
-        assert isinstance(stmt.value.left, BinaryExpr)
-        assert stmt.value.left.op == "=="
+        assert stmt.value.op == "=="
+        assert isinstance(stmt.value.right, BinaryExpr)
+        assert stmt.value.right.op == "inside"
 
 
 class TestInsideCodegen:
