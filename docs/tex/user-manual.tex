@@ -1636,7 +1636,17 @@ seq (clk) { q <= a; }
 seq (clk) { q <= b; }
 \end{lstlisting}
 
-The analyzer tracks assignments through \code{if} and \code{for} nesting within each block. Two separate \code{seq} or \code{comb} blocks driving the same signal produce an error.
+The analyzer tracks assignments through \code{if} and \code{for} nesting within each block. A signal driven by two \code{seq}/\code{comb} blocks, or by a procedural block and a continuous assignment, produces an error.
+
+The check is bit-range aware: two continuous assignments driving \emph{disjoint} bits of the same variable are legal, which is what unrolled code such as:
+
+\begin{lstlisting}[language=Slip]
+`for (`i = 0; `i < 4; `i = `i + 1) {
+    assign mask[`i] = din[`i];
+}
+\end{lstlisting}
+
+produces. Overlapping or whole-variable drivers are rejected.
 
 \section{Combinational Loop Detection}
 
@@ -1650,16 +1660,44 @@ comb {
 }
 \end{lstlisting}
 
-The detector builds a dependency graph per \code{comb} block by tracing which signals are read and which are driven. If a cycle is found, a \code{SlipSemanticError} is raised.
+The detector builds one dependency graph per module covering every \code{comb} block \emph{and} every continuous assignment, so loops that cross a block boundary are caught as well.
+
+Within a block, blocking (last-assignment-wins) semantics are modelled: a read resolves to the most recent prior assignment of what it reads, which is what keeps the standard \emph{init-then-accumulate} idiom loop-free:
+
+\begin{lstlisting}[language=Slip]
+comb {
+    y = 0;
+    y = y + b;   // OK: the read resolves to the 0 just assigned
+}
+\end{lstlisting}
+
+Graph nodes are (signal, index) pairs, so storage written in disjoint elements stays independent. A chain over array elements is fine, while a genuine element cycle is reported with its indices:
+
+\begin{lstlisting}[language=Slip]
+assign st[0] = din;   // OK
+assign st[1] = st[0];
+assign st[2] = st[1];
+
+// ERROR: combinational loop detected: st[2] -> st[1] -> st[0] -> st[2]
+\end{lstlisting}
+
+If a cycle is found, a \code{SlipSemanticError} is raised.
 
 \section{Width Mismatch Warnings}
 
 The compiler checks for width mismatches in assignments and instance port connections. When both sides have concrete integer widths and they differ, a warning is emitted:
 
 \begin{lstlisting}[language=Slip]
-module m (out[7:0]) {
-    assign out = 42;  // WARNING: 'out' is 8 bits, but value is 32 bits
+module m (out[7:0], other[3:0]) {
+    assign out = other;  // WARNING: 'out' is 8 bits, but value is 4 bits
 }
+\end{lstlisting}
+
+Unsized decimal literals are range-checked against the target rather than assumed to be 32 bits, so the common \code{y = 0;} idiom stays silent while a value that does not fit warns:
+
+\begin{lstlisting}[language=Slip]
+assign out = 42;    // OK: 42 fits in 8 bits
+assign out = 300;   // WARNING: value 300 does not fit in 'out' (8 bits)
 \end{lstlisting}
 
 Width-prefixed literals use their declared width:
@@ -1770,8 +1808,8 @@ Modules have circular instantiation dependency (e.g., module A instantiates B, a
 \item[\texttt{bare integer '...' in port connection must have explicit width}]
 Bare integer used in port connection. Use a width-prefixed literal (\texttt{1'b0}) or a fill constant (\texttt{'0}).
 
-\item[\texttt{signal 'name' driven by multiple blocks}]
-Multi-driver conflict --- the signal is driven by more than one \code{seq} or \code{comb} block.
+\item[\texttt{signal 'name' driven by multiple drivers}]
+A signal is driven by more than one source (two procedural blocks, or a block and a continuous assignment) over overlapping bits. Disjoint bit-ranges are allowed.
 
 \item[\texttt{invalid digit 'X' for radix 'r' in literal}]
 Integer literal contains a digit invalid for the specified radix (e.g.\ \texttt{4'bABCD}).
@@ -1792,10 +1830,34 @@ Step variable differs from the declared loop variable. The step expression deter
 Operator not supported by the constant expression evaluator.
 
 \item[\texttt{combinational loop detected: ...}]
-A feedback loop was found inside a \code{comb} block. The error message lists the signals involved in the cycle.
+A feedback loop was found. The message lists the storage involved, with indices where relevant (\code{st[2] -> st[1] -> st[0] -> st[2]}). The graph covers every \code{comb} block and every continuous assignment in the module.
 
 \item[\texttt{duplicate declaration of 'name'}]
 A signal, instance, or localparam with the same name is declared more than once in the same module.
+
+\item[\texttt{duplicate module definition: 'name' is defined more than once}]
+Two modules share a name in the compilation unit (including files pulled in by \code{include}).
+
+\item[\texttt{duplicate connection to port 'name' of instance 'I'}]
+The same target port is connected twice in one instance.
+
+\item[\texttt{cannot resolve target module 'name' of instance 'I'}]
+The instance target is neither defined in the compilation unit nor found in the IP index. Pass \code{-ip}/\code{-f} when the module is external IP; otherwise this is a typo.
+
+\item[\texttt{nonblocking assignment '<=' is not allowed at module level}]
+\code{<=} outside a \code{seq} block. Use a \code{seq (clk) \{ ... \}} block for sequential logic, or \code{=} for a continuous assignment.
+
+\item[\texttt{'if'/'for'/'case' is not supported at module level}]
+A procedural statement at module level. Wrap it in \code{comb \{\}} or \code{seq (clk) \{\}}, or use the compile-time forms \slipinline{`if}/\slipinline{`for}.
+
+\item[\texttt{empty concatenation '\{\}' is not allowed}]
+A concatenation with no operands has no width and no SystemVerilog equivalent.
+
+\item[\texttt{method '.name()' is not allowed in defun bodies}]
+\code{defun} bodies are evaluated in a sandbox with a safe method allowlist.
+
+\item[\texttt{regex port mapping error for port 'name' of instance 'I'}]
+Replacement evaluation failed: unknown \code{\$func}, invalid backreference, or bad arguments.
 
 \item[\texttt{reset polarity inconsistency: ...}]
 A reset signal is used with conflicting polarity (both \code{pos:} and \code{neg:}) across different \code{seq} blocks.
@@ -1806,8 +1868,8 @@ A reset signal is used with conflicting polarity (both \code{pos:} and \code{neg
 
 \begin{description}[style=nextline,leftmargin=2em]
 
-\item[\texttt{blocking '=' converted to '<=' in seq block}]
-Automatic assignment correction in sequential logic.
+\item[\texttt{in seq block of module 'M', the blocking assignment to 'name' reads its own previous value}]
+A blocking assignment converts to nonblocking in a \code{seq} block (unconditionally, as described in the conversion chapter). This warning fires for the assignments whose meaning that changes: a read-modify-write of storage already written on the same path, such as a loop accumulator (\code{for (...) \{ sum = sum + b; \}}) or \code{y = 0; y = y + b;}. The read will observe the pre-clock value, so restructure or use a \code{comb} block if the updated value was intended. Register transfers (shift registers, \code{t = a + 1; o = t;}) convert silently.
 
 \item[\texttt{pyslang not installed --- skipping validation}]
 Install \code{pyslang} to enable IEEE 1800 validation of generated output.
@@ -1815,8 +1877,20 @@ Install \code{pyslang} to enable IEEE 1800 validation of generated output.
 \item[\texttt{width mismatch: 'name' is N bits, but value is M bits}]
 An assignment has mismatched widths between the target signal and the value expression.
 
+\item[\texttt{value N does not fit in 'name' (M bits)}]
+An unsized decimal literal is outside the target's range (e.g.\ \code{out = 300} for an 8-bit \code{out}).
+
 \item[\texttt{port width mismatch: 'port' expects N bits, but 'signal' is M bits}]
 An instance port connection has mismatched widths between the port declaration and the connected signal.
+
+\item[\texttt{unconnected output port 'name' in instance 'I' of module 'M'}]
+An output port matched no connection and no regex rule; it is left dangling.
+
+\item[\texttt{duplicate module 'name' in IP sources}]
+Two IP files define the same module. The first definition is kept; the choice is otherwise arbitrary.
+
+\item[\texttt{output directory ... contains SystemVerilog files not produced by this run}]
+Stale \code{.sv} files from an earlier build (a renamed module, say) are still present. Downstream tools that compile a whole directory would pick them up.
 
 \end{description}
 
