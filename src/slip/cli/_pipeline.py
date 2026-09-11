@@ -16,7 +16,10 @@ def _resolve_includes(
     """Recursively resolve include directives, merging funcdefs and modules.
 
     Included files are lexed and parsed, and their funcdefs/modules are
-    appended to *unit*.  Cycle detection uses absolute resolved paths.
+    appended to *unit*.  Each file is merged at most once: absolute
+    resolved paths are tracked in *seen*, which both deduplicates diamond
+    include graphs and terminates include cycles.  Callers should seed
+    *seen* with the entry file so a cycle back to it is caught too.
     """
     if seen is None:
         seen = set()
@@ -25,8 +28,7 @@ def _resolve_includes(
         inc_path = _resolve_include_path(inc.path, base_dir)
 
         if inc_path in seen:
-            continue  # already included, skip
-        seen.add(inc_path)
+            continue  # already merged (diamond or cycle)
 
         if not inc_path.exists():
             from slip.errors.semantic import SlipSemanticError
@@ -35,11 +37,12 @@ def _resolve_includes(
                 f"cannot find included file: {inc_path}"
             )
 
-        text = inc_path.read_text()
+        seen.add(inc_path)
+        text = inc_path.read_text(encoding="utf-8")
         tokens = Lexer(text, str(inc_path)).tokenize()
         included = Parser(tokens, str(inc_path)).parse()
 
-        # Recurse into nested includes
+        # Recurse into nested includes before merging
         _resolve_includes(included, inc_path.parent, seen)
 
         # Merge funcdefs and modules from included file
@@ -58,6 +61,17 @@ def _resolve_include_path(path_str: str, base_dir: Path) -> Path:
     return (base_dir / p).resolve()
 
 
+def _frontend(source: Path):
+    """Lex, parse, and resolve includes for a source file."""
+    text = source.read_text(encoding="utf-8")
+    filename = str(source)
+    tokens = Lexer(text, filename).tokenize()
+    unit = Parser(tokens, filename).parse()
+    seen: set[Path] = {source.resolve()}
+    _resolve_includes(unit, source.parent, seen=seen)
+    return unit
+
+
 def run_build(
     source: Path,
     out_dir: Path,
@@ -65,17 +79,7 @@ def run_build(
     filelists: list[Path] | None = None,
 ) -> dict[str, str]:
     """Full compilation pipeline: source -> SV files."""
-    text = source.read_text()
-    filename = str(source)
-
-    # Lex
-    tokens = Lexer(text, filename).tokenize()
-
-    # Parse
-    unit = Parser(tokens, filename).parse()
-
-    # Resolve includes
-    _resolve_includes(unit, source.parent)
+    unit = _frontend(source)
 
     # Semantic analysis
     ir_modules = SemanticAnalyzer().analyze(unit, ip_dirs, filelists)
@@ -88,19 +92,16 @@ def run_check(
     source: Path,
     ip_dirs: list[Path],
     filelists: list[Path] | None = None,
-) -> None:
-    """Check pipeline: source -> semantic analysis, no output."""
-    text = source.read_text()
-    filename = str(source)
+) -> dict[str, str]:
+    """Check pipeline: source -> full codegen validation, no output.
 
-    # Lex
-    tokens = Lexer(text, filename).tokenize()
+    Runs the same semantic analysis *and* codegen (including pyslang
+    validation of the generated SystemVerilog) as run_build, so a file
+    that passes `slip check` always builds.
+    """
+    unit = _frontend(source)
 
-    # Parse
-    unit = Parser(tokens, filename).parse()
+    ir_modules = SemanticAnalyzer().analyze(unit, ip_dirs, filelists)
 
-    # Resolve includes
-    _resolve_includes(unit, source.parent)
-
-    # Semantic analysis (validates IR construction)
-    SemanticAnalyzer().analyze(unit, ip_dirs, filelists)
+    # Emit (and validate) every module, but write nothing to disk.
+    return CodeGenerator().generate(ir_modules, output_dir=None)

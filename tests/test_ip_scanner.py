@@ -140,3 +140,56 @@ class TestBuildIPIndex:
         assert idx.get_module("prim_sync_reset") is not None
         assert idx.get_module("prim_fifo") is not None
         assert idx.get_module("prim_obuf") is not None
+
+
+class TestIPScannerDiagnostics:
+    """Missing files error out; duplicates and unreflectable modules warn."""
+
+    def test_missing_filelist_entry_raises(self, tmp_path):
+        from slip.errors.semantic import SlipSemanticError
+        fl = tmp_path / "bad.f"
+        fl.write_text("./does_not_exist.sv\n")
+        with pytest.raises(SlipSemanticError, match="does not exist"):
+            build_ip_index([fl], [])
+
+    def test_duplicate_module_warns(self, tmp_path):
+        (tmp_path / "a.sv").write_text("module dup (input logic x); endmodule\n")
+        (tmp_path / "b.sv").write_text("module dup (input logic y); endmodule\n")
+        with pytest.warns(UserWarning, match="duplicate module 'dup'"):
+            idx = build_ip_index(None, [tmp_path])
+        assert idx.get_module("dup") is not None
+
+    def test_filelist_define_applies(self, tmp_path):
+        # Macro use requires the Verilog backtick prefix
+        (tmp_path / "top.sv").write_text(
+            "module t (input logic [`W-1:0] x); endmodule\n"
+        )
+        fl = tmp_path / "d.f"
+        fl.write_text("+define+W=8\n./top.sv\n")
+        idx = build_ip_index([fl], [])
+        ports = {p[0]: p for p in idx.get_ports("t")}
+        assert ports["x"][2] == "[7:0]"
+
+    def test_undefined_macro_leaves_port_unresolved(self, tmp_path):
+        # Without the define, the port width is not resolved to the macro value
+        (tmp_path / "top.sv").write_text(
+            "module t (input logic [`MISSING-1:0] x); endmodule\n"
+        )
+        fl = tmp_path / "d.f"
+        fl.write_text("./top.sv\n")
+        idx = build_ip_index([fl], [])
+        ports = {p[0]: p for p in idx.get_ports("t")}
+        assert ports["x"][2] != "[7:0]"
+
+    def test_unreadable_file_warns_not_silent(self, tmp_path):
+        bad = tmp_path / "bad.sv"
+        bad.write_text("module ok (input logic x); endmodule\n")
+        bad.chmod(0o000)
+        try:
+            # Per-file fallback path reports the read failure
+            with pytest.warns(UserWarning):
+                from slip.slang_integration.ip_scanner import _reflect_per_file
+                idx = _reflect_per_file([bad])
+            assert idx.get_module("ok") is None
+        finally:
+            bad.chmod(0o644)

@@ -2,17 +2,24 @@
 
 Pass 1: Collect files, defines, and include paths from filelist and IP directories.
 Pass 2: Parse all IP files together with shared preprocessor context via pyslang.
+
+Diagnostics: files that cannot be read are hard errors (a filelist entry
+that does not exist is almost always a typo).  Duplicate module names and
+modules that fail to reflect are reported as warnings — the index keeps
+the first definition but the user is told that the choice was arbitrary.
 """
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from pyslang import Compilation, SyntaxTree
+from pyslang import Compilation, SourceManager, SyntaxTree
 
+from slip.errors.semantic import SlipSemanticError
 from slip.slang_integration.filelist import FilelistData, parse_filelist
-from slip.slang_integration.reflection import ModuleInfo, ParamInfo, PortInfo
+from slip.slang_integration.reflection import ModuleInfo
 
 
 @dataclass
@@ -51,6 +58,10 @@ def build_ip_index(
 
     Returns:
         IPIndex with all discovered modules.
+
+    Raises:
+        SlipSemanticError: If a file listed in a filelist does not exist
+            or cannot be read.
     """
     # Pass 1: Collect all files, incdirs, defines
     all_files: list[Path] = []
@@ -63,6 +74,16 @@ def build_ip_index(
         fl_data = parse_filelist(fl_path)
         for f in fl_data.files:
             resolved = f.resolve()
+            if not resolved.exists():
+                raise SlipSemanticError(
+                    str(fl_path), 0, 0,
+                    f"file listed in filelist does not exist: {f}"
+                )
+            if not resolved.is_file():
+                raise SlipSemanticError(
+                    str(fl_path), 0, 0,
+                    f"filelist entry is not a regular file: {f}"
+                )
             if resolved not in seen_files:
                 seen_files.add(resolved)
                 all_files.append(f)
@@ -99,103 +120,84 @@ def _reflect_all_modules(
     """Parse all IP files together and extract module information."""
     index = IPIndex()
 
-    # Build options with include paths
-    from pyslang import Bag, PreprocessorOptions
-
-    popts = PreprocessorOptions()
-    for d in incdirs:
-        popts.additionalIncludePaths.append(str(d))
-
-    # Note: predefines API is unreliable in pyslang, skip for now
-    # Defines within files are handled by the shared preprocessor context
-
-    bag = Bag([popts])
-
-    # Parse all files into a single syntax tree (shared preprocessor context)
-    file_paths = [str(f) for f in files if f.exists()]
-    if not file_paths:
-        return index
+    popts = _make_preprocessor_options(incdirs, defines)
+    file_paths = [str(f) for f in files]
 
     try:
-        tree = SyntaxTree.fromFiles(file_paths, bag)
+        tree = SyntaxTree.fromFiles(file_paths, SourceManager(), _bag(popts))
     except Exception:
         # If batch parsing fails, fall back to per-file parsing
-        return _reflect_per_file(files)
+        return _reflect_per_file(files, defines)
 
-    # Create compilation and add the tree
     comp = Compilation()
     comp.addSyntaxTree(tree)
-
-    # Extract all module definitions
-    _extract_modules_from_compilation(comp, index)
-
+    _extract_modules_from_compilation(comp, index, source_label=", ".join(file_paths[:3]))
     return index
+
+
+def _make_preprocessor_options(incdirs: list[Path], defines: list[str]):
+    from pyslang import PreprocessorOptions
+
+    popts = PreprocessorOptions()
+    # Note: the `predefines` span must be assigned wholesale — appending to
+    # the attribute silently does nothing (it returns a copy).
+    for d in incdirs:
+        popts.additionalIncludePaths.append(str(d))
+    if defines:
+        popts.predefines = list(defines)
+    return popts
+
+
+def _bag(popts):
+    from pyslang import Bag
+    return Bag([popts])
 
 
 def _extract_modules_from_compilation(
     comp: Compilation,
     index: IPIndex,
+    source_label: str = "",
 ) -> None:
     """Extract module info from a pyslang Compilation."""
-    from pyslang import SymbolKind
+    from slip.slang_integration.reflection import _reflect_body
 
     root = comp.getRoot()
 
     # Iterate all definitions in the compilation
     for defn in comp.getDefinitions():
         name = defn.name
+        if name in index._modules:
+            warnings.warn(
+                f"duplicate module '{name}' in IP sources — keeping the "
+                f"first definition (from {source_label or 'IP index'})"
+            )
+            continue
         try:
             top = root.lookupName(name)
             if top is None:
                 continue
-            body = top.body
-
-            # Collect params
-            params: list[ParamInfo] = []
-            for sym in body:
-                if sym.kind == SymbolKind.Parameter:
-                    val = str(sym.value) if hasattr(sym, 'value') and sym.value else None
-                    is_local = getattr(sym, 'isLocalParam', False)
-                    params.append(ParamInfo(sym.name, "int", val, is_local=is_local))
-
-            # Collect ports
-            ports: list[PortInfo] = []
-            for port in body.portList:
-                direction = str(port.direction).lower() if hasattr(port, 'direction') else "input"
-                if "inout" in direction:
-                    direction = "inout"
-                elif "out" in direction:
-                    direction = "output"
-                else:
-                    direction = "input"
-                width = None
-                if hasattr(port, 'type') and port.type:
-                    t = port.type
-                    if hasattr(t, 'bitWidth') and t.bitWidth > 1:
-                        bw = t.bitWidth
-                        width = f"[{bw - 1}:0]"
-                ports.append(PortInfo(port.name, direction, width))
-
-            index._modules[name] = ModuleInfo(
-                params=tuple(params),
-                ports=tuple(ports),
+            index._modules[name] = _reflect_body(top.body)
+        except Exception as e:
+            warnings.warn(
+                f"could not reflect module '{name}' from IP sources: {e}"
             )
-        except Exception:
-            # Skip modules that fail to reflect
             continue
 
 
-def _reflect_per_file(files: list[Path]) -> IPIndex:
+def _reflect_per_file(files: list[Path], defines: list[str] | None = None) -> IPIndex:
     """Fallback: reflect modules from individual files."""
     from slip.slang_integration.reflection import reflect_module
 
     index = IPIndex()
-    # First pass: collect all module names by trying to reflect common patterns
     for f in files:
         if not f.exists():
             continue
         try:
-            source = f.read_text()
+            source = f.read_text(encoding="utf-8")
+        except OSError as e:
+            warnings.warn(f"could not read IP file '{f}': {e}")
+            continue
+        try:
             tree = SyntaxTree.fromText(source, str(f))
             comp = Compilation()
             comp.addSyntaxTree(tree)
@@ -207,9 +209,13 @@ def _reflect_per_file(files: list[Path]) -> IPIndex:
                 try:
                     info = reflect_module(f, name)
                     index._modules[name] = info
-                except Exception:
+                except Exception as e:
+                    warnings.warn(
+                        f"could not reflect module '{name}' from '{f}': {e}"
+                    )
                     continue
-        except Exception:
+        except Exception as e:
+            warnings.warn(f"could not parse IP file '{f}': {e}")
             continue
 
     return index

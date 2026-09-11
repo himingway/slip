@@ -9,22 +9,29 @@ class TestFixtureFiles:
     def test_simple(self):
         source = FIXTURES / "simple.slip"
         result = run_check(source, [])
-        assert result is None  # no error
+        assert "simple" in result  # check returns generated SV, writes nothing
 
     def test_seq_block(self):
         source = FIXTURES / "seq_block.slip"
         result = run_check(source, [])
-        assert result is None
+        assert "counter" in result
 
     def test_implicit_ports(self):
         source = FIXTURES / "implicit_ports.slip"
         result = run_check(source, [])
-        assert result is None
+        assert "implicit" in result
 
     def test_params(self):
         source = FIXTURES / "params.slip"
         result = run_check(source, [])
-        assert result is None
+        assert "adder" in result
+
+    def test_check_writes_no_files(self, tmp_path):
+        import os
+        source = FIXTURES / "simple.slip"
+        before = set(os.listdir(tmp_path))
+        run_check(source, [])
+        assert set(os.listdir(tmp_path)) == before
 
 
 class TestBuildOutput:
