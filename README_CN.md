@@ -110,7 +110,7 @@ include "utils/common.slip";  // 相对路径从 include 所在文件解析
 module top (clk, rst_n) {
     logic clk;
     logic rst_n;
-    inner u1 { .clk, .rst_n, "data_(.*)" => "$prefix(\\1)" };
+    inner u1 { .clk, .rst_n, "data_(.*)" => "$prefix(\1)" };
 }
 ```
 

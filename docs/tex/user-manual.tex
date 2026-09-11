@@ -120,7 +120,7 @@ Slip is a minimal hardware description language (DSL) that compiles \code{.slip}
 \section{Install with uv}
 
 \begin{lstlisting}[language=bash]
-git clone https://github.com/user/slip.git
+git clone https://github.com/himingway/slip.git
 cd slip
 uv sync
 \end{lstlisting}
@@ -128,7 +128,7 @@ uv sync
 \section{Install with pip}
 
 \begin{lstlisting}[language=bash]
-git clone https://github.com/user/slip.git
+git clone https://github.com/himingway/slip.git
 cd slip
 pip install -e .
 \end{lstlisting}
@@ -983,8 +983,8 @@ module top (clk) {
     logic clk;
     inner u1 {
         .clk,
-        "data_(.*)" => "$prefix(\\1)",
-        "ch_(.*)" => "$inc(\\1)"
+        "data_(.*)" => "$prefix(\1)",
+        "ch_(.*)" => "$inc(\1)"
     };
 }
 \end{lstlisting}
@@ -1066,8 +1066,8 @@ Use \code{\$func(...)} syntax to transform captured groups in replacements:
 \begin{lstlisting}[language=Slip]
 child u1 {
     .clk,
-    "data_(.*)" => "bus_\$upper(\\1)",    // uppercase
-    "ch_(.*)"   => "port_\$add(\\1, 1)"   // arithmetic
+    "data_(.*)" => "bus_$upper(\1)",    // uppercase
+    "ch_(.*)"   => "port_$add(\1, 1)"   // arithmetic
 };
 \end{lstlisting}
 
@@ -1078,10 +1078,12 @@ Built-in functions:
   \item \textbf{Bit}: \code{\$bit\_reverse}, \code{\$bit\_select}
 \end{itemize}
 
+The arithmetic functions require a numeric capture (a port named \code{ch\_b} cannot be incremented; use a string function for non-numeric names). The failure is reported as a located error naming the port and instance.
+
 Multiple functions and prefix/suffix text are supported:
 \begin{lstlisting}[language=Slip]
-"port_(.*)" => "pre_\$upper(\\1)_post"   // prefix + function + suffix
-"a_(.*)_b_(.*)" => "\$upper(\\1)_\$lower(\\2)"  // multiple functions
+"port_(.*)" => "pre_$upper(\1)_post"   // prefix + function + suffix
+"a_(.*)_b_(.*)" => "$upper(\1)_$lower(\2)"  // multiple functions
 \end{lstlisting}
 
 \subsection{Custom Functions}
@@ -1100,7 +1102,7 @@ register("my_func", my_func)
 Then use in Slip:
 
 \begin{lstlisting}[language=Slip]
-child u1 { .clk, "data_(.*)" => "\$my_func(\\1)" };
+child u1 { .clk, "data_(.*)" => "$my_func(\1)" };
 \end{lstlisting}
 
 Custom functions can override built-in functions. The function signature must accept string arguments and return a string.
@@ -1123,9 +1125,9 @@ module top (clk) {
     logic clk;
     inner u1 {
         .clk,
-        "data_(.*)" => "\$prefix(\\1)",
-        "name_(.*)" => "\$to_upper(\\1)",
-        "ch_(.*)" => "\$inc(\\1)"
+        "data_(.*)" => "$prefix(\1)",
+        "name_(.*)" => "$to_upper(\1)",
+        "ch_(.*)" => "$inc(\1)"
     };
 }
 \end{lstlisting}
@@ -1156,7 +1158,7 @@ module inner (data_in, data_out) {
 
 module top (clk) {
     logic clk;
-    inner u1 { .clk, "data_(.*)" => "bus_\$fix_names(\\1)" };
+    inner u1 { .clk, "data_(.*)" => "bus_$fix_names(\1)" };
     // data_in -> bus_data-in, data_out -> bus_data-out
 }
 \end{lstlisting}
@@ -1174,7 +1176,7 @@ module inner (channel_a, channel_b) {
 
 module top (clk) {
     logic clk;
-    inner u1 { .clk, "channel_(.*)" => "\$shorten(\\1)" };
+    inner u1 { .clk, "channel_(.*)" => "$shorten(\1)" };
     // channel_a -> chan, channel_b -> chan
 }
 \end{lstlisting}
@@ -1192,7 +1194,7 @@ module inner (sig_in, sig_out) {
 
 module top (clk) {
     logic clk;
-    inner u1 { .clk, "sig_(.*)" => "port_\$clean_upper(\\1)" };
+    inner u1 { .clk, "sig_(.*)" => "port_$clean_upper(\1)" };
     // sig_in -> port_SIGIN, sig_out -> port_SIGOUT
 }
 \end{lstlisting}
@@ -1211,7 +1213,7 @@ module inner (araddr, awaddr, wdata) {
 
 module top (clk) {
     logic clk;
-    inner u1 { .clk, "(.*)" => "\$prefix_by_type(\\1)" };
+    inner u1 { .clk, "(.*)" => "$prefix_by_type(\1)" };
     // araddr -> axi_araddr, awaddr -> apb_awaddr, wdata -> apb_wdata
 }
 \end{lstlisting}

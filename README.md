@@ -113,7 +113,7 @@ include "utils/common.slip"; // relative paths resolved from the including file
 module top (clk, rst_n) {
     logic clk;
     logic rst_n;
-    inner u1 { .clk, .rst_n, "data_(.*)" => "$prefix(\\1)" };
+    inner u1 { .clk, .rst_n, "data_(.*)" => "$prefix(\1)" };
 }
 ```
 
