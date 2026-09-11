@@ -41,7 +41,7 @@ from slip.ast.statements import (
 from slip.errors.semantic import SlipSemanticError
 
 _VERILOG_LITERAL_RE = re.compile(
-    r"^(?:(\d+)'([bBdDhHoO])([0-9a-fA-F_xXzZ]+)|([0-9][0-9_]*))$"
+    r"^(?:(\d+)'([bBdDhHoO])([0-9a-fA-F_xXzZ]+)|(-?[0-9][0-9_]*))$"
 )
 
 _MAX_ITER = 1024
@@ -52,6 +52,8 @@ def _parse_int_literal(raw: str) -> int:
     if not m:
         raise ValueError(f"invalid integer literal: {raw}")
     if m.group(4) is not None:
+        # Plain (possibly negative) decimal — folded literals like "-3"
+        # from loop-variable arithmetic land here.
         return int(m.group(4).replace("_", ""))
     digits = m.group(3).replace("_", "")
     if any(c in digits for c in "xXzZ"):
@@ -90,26 +92,52 @@ def _eval_int(expr: Expr, params: dict[str, int], loc: SourceLocation) -> int:
             )
         left = _eval_int(expr.left, params, loc)
         right = _eval_int(expr.right, params, loc)
-        ops: dict[str, int] = {
-            "+": left + right, "-": left - right, "*": left * right,
-            "/": left // right if right != 0 else 0,
-            "%": left % right if right != 0 else 0,
-            "**": left ** right,
-            "<": int(left < right), ">": int(left > right),
-            "<=": int(left <= right), ">=": int(left >= right),
-            "==": int(left == right), "!=": int(left != right),
-            "===": int(left == right), "!==": int(left != right),
-            "&&": int(left and right), "||": int(left or right),
-            "&": left & right, "|": left | right, "^": left ^ right,
-            "<<": left << right, ">>": left >> right,
-            "<<<": left << right, ">>>": left >> right,
-        }
-        if expr.op not in ops:
-            raise SlipSemanticError(
-                loc.file, loc.line, loc.col,
-                f"unsupported operator '{expr.op}' in compile-time expression"
-            )
-        return ops[expr.op]
+        op = expr.op
+        if op == "+":
+            return left + right
+        if op == "-":
+            return left - right
+        if op == "*":
+            return left * right
+        if op in ("/", "%"):
+            if right == 0:
+                raise SlipSemanticError(
+                    loc.file, loc.line, loc.col,
+                    "division by zero in compile-time expression"
+                )
+            return left // right if op == "/" else left % right
+        if op == "**":
+            return left ** right
+        if op == "<":
+            return int(left < right)
+        if op == ">":
+            return int(left > right)
+        if op == "<=":
+            return int(left <= right)
+        if op == ">=":
+            return int(left >= right)
+        if op in ("==", "==="):
+            return int(left == right)
+        if op in ("!=", "!=="):
+            return int(left != right)
+        if op == "&&":
+            return int(left and right)
+        if op == "||":
+            return int(left or right)
+        if op == "&":
+            return left & right
+        if op == "|":
+            return left | right
+        if op == "^":
+            return left ^ right
+        if op in ("<<", "<<<"):
+            return left << right
+        if op in (">>", ">>>"):
+            return left >> right
+        raise SlipSemanticError(
+            loc.file, loc.line, loc.col,
+            f"unsupported operator '{op}' in compile-time expression"
+        )
     if isinstance(expr, UnaryExpr):
         operand = _eval_int(expr.operand, params, loc)
         if expr.op == "-":
@@ -192,7 +220,10 @@ def _sub_name(name: str, var: str, val: int) -> str:
     """Replace `var meta-variable in identifier names.
 
     Replaces backtick-prefixed variable: data_`i → data_3, inst_`i → inst_3.
+    Non-string names (directly-constructed ASTs) pass through unchanged.
     """
+    if not isinstance(name, str):
+        return name
     return name.replace(f"`{var}", str(val))
 
 
@@ -284,7 +315,11 @@ def _sub_stmt(stmt: Statement, var: str, val: int) -> Statement:
                           width=new_width, name=_sub_name(stmt.name, var, val),
                           array_range=new_arr)
     if isinstance(stmt, SeqBlock):
-        return SeqBlock(stmt.loc, clock=stmt.clock, reset=stmt.reset,
+        new_reset = None
+        if stmt.reset is not None:
+            new_reset = (stmt.reset[0], _sub_name(stmt.reset[1], var, val))
+        return SeqBlock(stmt.loc, clock=_sub_name(stmt.clock, var, val),
+                        reset=new_reset,
                         body=_sub_block(stmt.body, var, val))
     if isinstance(stmt, CombBlock):
         return CombBlock(stmt.loc, body=_sub_block(stmt.body, var, val))
@@ -296,10 +331,10 @@ def _sub_stmt(stmt: Statement, var: str, val: int) -> Statement:
                       then_body=_sub_block(stmt.then_body, var, val),
                       else_body=_sub_block(stmt.else_body, var, val) if stmt.else_body else None)
     if isinstance(stmt, ForStmt):
-        return ForStmt(stmt.loc, var=stmt.var,
+        return ForStmt(stmt.loc, var=_sub_name(stmt.var, var, val),
                        init=_sub_expr(stmt.init, var, val),
                        cond=_sub_expr(stmt.cond, var, val),
-                       step_var=stmt.step_var,
+                       step_var=_sub_name(stmt.step_var, var, val),
                        step=_sub_expr(stmt.step, var, val),
                        body=_sub_block(stmt.body, var, val))
     if isinstance(stmt, CaseStmt):
@@ -331,7 +366,7 @@ def _sub_stmt(stmt: Statement, var: str, val: int) -> Statement:
     if isinstance(stmt, BlockStmt):
         return _sub_block(stmt, var, val)
     if isinstance(stmt, LocalParamDecl):
-        return LocalParamDecl(stmt.loc, name=stmt.name,
+        return LocalParamDecl(stmt.loc, name=_sub_name(stmt.name, var, val),
                               value=_sub_expr(stmt.value, var, val))
     if isinstance(stmt, GenForStmt):
         return GenForStmt(stmt.loc, var=stmt.var,
@@ -473,7 +508,8 @@ def expand_module(module: Module) -> Module:
     """
     params: dict[str, int] = {}
     for p in module.params:
-        params[p.name] = _eval_int(p.default, {}, p.loc)
+        # Defaults may reference earlier parameters, e.g. #(param W = 8, param N = W * 2)
+        params[p.name] = _eval_int(p.default, params, p.loc)
     # Collect top-level localparams for compile-time evaluation
     for stmt in module.body:
         if isinstance(stmt, LocalParamDecl):

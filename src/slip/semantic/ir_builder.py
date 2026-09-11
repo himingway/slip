@@ -4,7 +4,6 @@ import re
 
 from slip.ast.expressions import Expr, IdentExpr, IntLiteralExpr
 from slip.ast.instance import InstanceStmt
-from slip.ast.metaprogram import GenForStmt, GenIfStmt
 from slip.ast.module import Module, Param, PortItem
 from slip.ast.statements import (
     AssignStmt,
@@ -15,6 +14,7 @@ from slip.ast.statements import (
     IfStmt,
     InitialBlock,
     LocalParamDecl,
+    LValue,
     SeqBlock,
     SignalDecl,
     Statement,
@@ -35,7 +35,11 @@ from slip.ir import (
 )
 from slip.semantic.driver_analysis import DriverInfo, detect_comb_loops, infer_port_directions
 from slip.semantic.expr_serializer import expr_to_sv
-from slip.semantic.symbol_collector import SymbolTable
+from slip.semantic.symbol_collector import (
+    SymbolTable,
+    iter_localparam_decls,
+    iter_signal_decls,
+)
 
 
 def build(
@@ -69,13 +73,13 @@ def build(
     instances: list[HDLInstance] = []
     localparams: list[HDLParam] = []
 
-    # Collect signal type info from declarations (for enriching ports with width info)
+    # Collect signal type info from all declarations, including ones nested
+    # inside comb/seq/if/for/case blocks (for enriching ports with width info)
     signal_types: dict[str, SignalDecl] = {}
-    for stmt in module.body:
-        if isinstance(stmt, SignalDecl):
-            signal_types[stmt.name] = stmt
+    for decl in iter_signal_decls(module.body):
+        signal_types[decl.name] = decl
 
-    # Update ports with width info from signal declarations
+    # Update ports with width, signedness, and array info from signal declarations
     if explicit_ports:
         enriched_ports = []
         for p in ports:
@@ -84,10 +88,14 @@ def build(
                 width_sv = None
                 if decl.width:
                     width_sv = _width_to_sv(decl.width)
+                array_dim = None
+                if decl.array_range:
+                    array_dim = f"[{expr_to_sv(decl.array_range[0])}:{expr_to_sv(decl.array_range[1])}]"
                 enriched_ports.append(HDLPort(
                     name=p.name,
                     direction=p.direction,
                     type_=HDLType(width_sv=width_sv, is_signed=decl.is_signed),
+                    array_dim=array_dim,
                 ))
             else:
                 enriched_ports.append(p)
@@ -95,11 +103,10 @@ def build(
 
     # Collect explicitly declared signals (skip those already declared as ports)
     declared_signals: set[str] = set()
-    for stmt in module.body:
-        if isinstance(stmt, SignalDecl):
-            declared_signals.add(stmt.name)
-            if stmt.name not in directions:
-                signals.append(_make_signal(stmt))
+    for decl in iter_signal_decls(module.body):
+        declared_signals.add(decl.name)
+        if decl.name not in directions:
+            signals.append(_make_signal(decl))
 
     # Implicit signals: referenced names that aren't params, ports, instances, or declared signals
     # Note: for-loop variables are excluded from implicit signal creation
@@ -119,15 +126,25 @@ def build(
             continue  # system functions
         signals.append(HDLSignal(name, HDLType(), declared=False))
 
+    # Collect localparams, including block-nested ones
+    for decl in iter_localparam_decls(module.body):
+        localparams.append(HDLParam(decl.name, expr_to_sv(decl.value)))
+
     # Process statements
     for stmt in module.body:
         if isinstance(stmt, SignalDecl):
             continue  # already handled
         elif isinstance(stmt, LocalParamDecl):
-            localparams.append(HDLParam(stmt.name, expr_to_sv(stmt.value)))
-            continue
+            continue  # already handled
         elif isinstance(stmt, AssignStmt):
-            _process_assign(stmt, assigns, logic_blocks, drivers)
+            if stmt.is_nonblocking:
+                raise SlipSemanticError(
+                    stmt.loc.file, stmt.loc.line, stmt.loc.col,
+                    "nonblocking assignment '<=' is not allowed at module level; "
+                    "use a seq (clk) { } block for sequential logic, or blocking "
+                    "'=' for a continuous assignment"
+                )
+            _process_assign(stmt, assigns)
         elif isinstance(stmt, SeqBlock):
             _process_seq(stmt, logic_blocks)
         elif isinstance(stmt, CombBlock):
@@ -136,8 +153,28 @@ def build(
             _process_initial(stmt, logic_blocks)
         elif isinstance(stmt, InstanceStmt):
             _process_instance(stmt, instances)
-        elif isinstance(stmt, (GenForStmt, GenIfStmt)):
-            pass  # Phase 2
+        elif isinstance(stmt, IfStmt):
+            raise SlipSemanticError(
+                stmt.loc.file, stmt.loc.line, stmt.loc.col,
+                "'if' is not supported at module level; wrap it in a "
+                "comb { } or seq (clk) { } block "
+                "(use `if for compile-time conditionals)"
+            )
+        elif isinstance(stmt, ForStmt):
+            raise SlipSemanticError(
+                stmt.loc.file, stmt.loc.line, stmt.loc.col,
+                "'for' is not supported at module level; wrap it in a "
+                "comb { } or seq (clk) { } block "
+                "(use `for for compile-time loops)"
+            )
+        elif isinstance(stmt, CaseStmt):
+            raise SlipSemanticError(
+                stmt.loc.file, stmt.loc.line, stmt.loc.col,
+                "'case' is not supported at module level; wrap it in a "
+                "comb { } or seq (clk) { } block"
+            )
+        elif isinstance(stmt, BlockStmt):
+            continue  # comma-separated localparam group — already handled
 
     # BUG-014: Check for multi-driver conflicts
     _check_multi_driver(module.body, declared_signals, symbols)
@@ -210,18 +247,22 @@ def _width_to_sv(expr: Expr) -> str:
     return f"[{sv}-1:0]"
 
 
+def _lvalue_sv(target: LValue) -> str:
+    """Serialize an LValue to SV text like 'x[3:0]'."""
+    sv = target.name
+    for idx in target.indices:
+        if isinstance(idx, tuple):
+            sv += f"[{expr_to_sv(idx[0])}:{expr_to_sv(idx[1])}]"
+        else:
+            sv += f"[{expr_to_sv(idx)}]"
+    return sv
+
+
 def _process_assign(
     stmt: AssignStmt,
     assigns: list,
-    logic_blocks: list,
-    drivers: DriverInfo,
 ):
-    target_sv = stmt.target.name
-    for idx in stmt.target.indices:
-        if isinstance(idx, tuple):
-            target_sv += f"[{expr_to_sv(idx[0])}:{expr_to_sv(idx[1])}]"
-        else:
-            target_sv += f"[{expr_to_sv(idx)}]"
+    target_sv = _lvalue_sv(stmt.target)
     value_sv = expr_to_sv(stmt.value)
     assigns.append(HDLAssignment(target_sv, value_sv, stmt.is_nonblocking))
 
@@ -251,12 +292,7 @@ def _convert_block(block: BlockStmt) -> list:
     items: list = []
     for stmt in block.statements:
         if isinstance(stmt, AssignStmt):
-            target_sv = stmt.target.name
-            for idx in stmt.target.indices:
-                if isinstance(idx, tuple):
-                    target_sv += f"[{expr_to_sv(idx[0])}:{expr_to_sv(idx[1])}]"
-                else:
-                    target_sv += f"[{expr_to_sv(idx)}]"
+            target_sv = _lvalue_sv(stmt.target)
             value_sv = expr_to_sv(stmt.value)
             items.append(HDLAssignment(target_sv, value_sv, stmt.is_nonblocking))
         elif isinstance(stmt, IfStmt):
@@ -333,6 +369,7 @@ def _process_instance(stmt: InstanceStmt, instances: list):
         param_map=param_map,
         port_map=tuple(named_conns),
         regex_rules=tuple(regex_rules),
+        loc=stmt.loc,
     ))
 
 
@@ -355,7 +392,49 @@ def _collect_for_vars(body: tuple[Statement, ...]) -> set[str]:
                 vars |= _collect_for_vars(stmt.else_body.statements)
         elif isinstance(stmt, BlockStmt):
             vars |= _collect_for_vars(stmt.statements)
+        elif isinstance(stmt, CaseStmt):
+            for ci in stmt.items:
+                vars |= _collect_for_vars(ci.body.statements)
     return vars
+
+
+def _const_bit(expr: Expr) -> int | None:
+    """Evaluate a constant bit index, or None if not a constant."""
+    if isinstance(expr, IntLiteralExpr):
+        from slip.semantic.gen_expand import _parse_int_literal
+        try:
+            return _parse_int_literal(expr.raw)
+        except ValueError:
+            return None
+    return None
+
+
+def _target_range(target: LValue) -> tuple[int, int] | None:
+    """Constant bit range driven by an lvalue, or None for whole/unknown.
+
+    Bit- and part-selects with constant indices yield ``(lo, hi)``; a
+    whole-variable assignment or a non-constant select yields None,
+    which conservatively overlaps everything.
+    """
+    if not target.indices:
+        return None
+    idx = target.indices[-1]
+    if isinstance(idx, tuple):
+        hi = _const_bit(idx[0])
+        lo = _const_bit(idx[1])
+        if hi is None or lo is None:
+            return None
+        return (min(hi, lo), max(hi, lo))
+    v = _const_bit(idx)
+    if v is None:
+        return None
+    return (v, v)
+
+
+def _ranges_overlap(a: tuple[int, int] | None, b: tuple[int, int] | None) -> bool:
+    if a is None or b is None:
+        return True  # whole/unknown overlaps anything
+    return a[0] <= b[1] and b[0] <= a[1]
 
 
 def _check_multi_driver(
@@ -363,41 +442,50 @@ def _check_multi_driver(
     declared_signals: set[str],
     symbols: SymbolTable,
 ):
-    """Check that no signal is driven by multiple procedural blocks."""
-    # Map signal name -> block identifier
-    driven_by: dict[str, str] = {}
+    """Check that no signal bit is driven by multiple sources.
+
+    Drivers are seq blocks, comb blocks, and top-level continuous
+    assignments.  The check is bit-aware: driving disjoint bits of the
+    same variable from separate continuous assignments (a common result
+    of ``for`` loop unrolling) is legal; overlapping or whole-variable
+    drivers are a conflict.
+    """
+    # Map signal name -> list of (range, block identifier) already driving
+    driven_by: dict[str, list[tuple[tuple[int, int] | None, str]]] = {}
+
+    def _check(sig: str, rng: tuple[int, int] | None, block_id: str, fallback_loc):
+        for prev_range, prev_id in driven_by.get(sig, ()):
+            if _ranges_overlap(prev_range, rng):
+                loc = symbols.all_refs.get(sig, [fallback_loc])[0]
+                raise SlipSemanticError(
+                    loc.file, loc.line, loc.col,
+                    f"signal '{sig}' driven by multiple drivers "
+                    f"({prev_id} and {block_id})"
+                )
+        driven_by.setdefault(sig, []).append((rng, block_id))
+
+    def _check_block(body_stmt, block: BlockStmt, block_id: str):
+        # Multiple assignments to one signal inside the same procedural
+        # block are a single driver, not a conflict.
+        seen: set[str] = set()
+        for sig, rng in _collect_driven_signals(block, whole=True):
+            if sig in seen:
+                continue
+            seen.add(sig)
+            _check(sig, rng, block_id, body_stmt.loc)
 
     for stmt in body:
         if isinstance(stmt, SeqBlock):
-            block_id = f"seq({stmt.clock})"
-            driven = _collect_driven_signals(stmt.body)
-            for sig in driven:
-                if sig in driven_by:
-                    loc = symbols.all_refs.get(sig, [None])[0]
-                    file = loc.file if loc else "<unknown>"
-                    line = loc.line if loc else 0
-                    col = loc.col if loc else 0
-                    raise SlipSemanticError(
-                        file, line, col,
-                        f"signal '{sig}' driven by multiple blocks "
-                        f"({driven_by[sig]} and {block_id})"
-                    )
-                driven_by[sig] = block_id
+            _check_block(stmt, stmt.body, f"seq({stmt.clock})")
         elif isinstance(stmt, CombBlock):
-            block_id = "comb"
-            driven = _collect_driven_signals(stmt.body)
-            for sig in driven:
-                if sig in driven_by:
-                    loc = symbols.all_refs.get(sig, [None])[0]
-                    file = loc.file if loc else "<unknown>"
-                    line = loc.line if loc else 0
-                    col = loc.col if loc else 0
-                    raise SlipSemanticError(
-                        file, line, col,
-                        f"signal '{sig}' driven by multiple blocks "
-                        f"({driven_by[sig]} and {block_id})"
-                    )
-                driven_by[sig] = block_id
+            _check_block(stmt, stmt.body, "comb")
+        elif isinstance(stmt, AssignStmt):
+            _check(
+                stmt.target.name,
+                _target_range(stmt.target),
+                "continuous assignment",
+                stmt.loc,
+            )
         # Initial blocks are excluded from multi-driver checks because
         # they legitimately initialize signals driven by seq/comb blocks.
 
@@ -421,19 +509,25 @@ def _check_reset_polarity(body: tuple[Statement, ...]):
                 reset_polarities[signal] = polarity
 
 
-def _collect_driven_signals(block: BlockStmt) -> set[str]:
-    """Collect all signal names that are assigned in a block."""
-    driven: set[str] = set()
+def _collect_driven_signals(block: BlockStmt, whole: bool = False) -> list[tuple[str, tuple[int, int] | None]]:
+    """Collect (signal, bit-range) pairs assigned in a block.
+
+    *whole* forces the range to None (whole-variable) — used for seq and
+    comb blocks, where any assignment inside the block drives the signal
+    as a single process regardless of the select used.
+    """
+    driven: list[tuple[str, tuple[int, int] | None]] = []
     for stmt in block.statements:
         if isinstance(stmt, AssignStmt):
-            driven.add(stmt.target.name)
+            rng = None if whole else _target_range(stmt.target)
+            driven.append((stmt.target.name, rng))
         elif isinstance(stmt, IfStmt):
-            driven |= _collect_driven_signals(stmt.then_body)
+            driven.extend(_collect_driven_signals(stmt.then_body, whole))
             if stmt.else_body:
-                driven |= _collect_driven_signals(stmt.else_body)
+                driven.extend(_collect_driven_signals(stmt.else_body, whole))
         elif isinstance(stmt, ForStmt):
-            driven |= _collect_driven_signals(stmt.body)
+            driven.extend(_collect_driven_signals(stmt.body, whole))
         elif isinstance(stmt, CaseStmt):
             for ci in stmt.items:
-                driven |= _collect_driven_signals(ci.body)
+                driven.extend(_collect_driven_signals(ci.body, whole))
     return driven

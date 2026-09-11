@@ -62,9 +62,40 @@ def _collect_expr_idents(expr: Expr, refs: dict[str, list[SourceLocation]], loc:
         _collect_expr_idents(expr.inner, refs, loc)
 
 
-def _collect_lvalue_name(lvalue) -> str:
-    """Extract the base identifier name from an LValue."""
-    return lvalue.name
+def iter_signal_decls(stmts: tuple[Statement, ...]):
+    """Yield every SignalDecl in *stmts*, recursing into nested blocks."""
+    for stmt in stmts:
+        if isinstance(stmt, SignalDecl):
+            yield stmt
+        elif isinstance(stmt, (SeqBlock, CombBlock, InitialBlock, BlockStmt)):
+            yield from iter_signal_decls(stmt.body.statements)
+        elif isinstance(stmt, IfStmt):
+            yield from iter_signal_decls(stmt.then_body.statements)
+            if stmt.else_body:
+                yield from iter_signal_decls(stmt.else_body.statements)
+        elif isinstance(stmt, ForStmt):
+            yield from iter_signal_decls(stmt.body.statements)
+        elif isinstance(stmt, CaseStmt):
+            for ci in stmt.items:
+                yield from iter_signal_decls(ci.body.statements)
+
+
+def iter_localparam_decls(stmts: tuple[Statement, ...]):
+    """Yield every LocalParamDecl in *stmts*, recursing into nested blocks."""
+    for stmt in stmts:
+        if isinstance(stmt, LocalParamDecl):
+            yield stmt
+        elif isinstance(stmt, (SeqBlock, CombBlock, InitialBlock, BlockStmt)):
+            yield from iter_localparam_decls(stmt.body.statements)
+        elif isinstance(stmt, IfStmt):
+            yield from iter_localparam_decls(stmt.then_body.statements)
+            if stmt.else_body:
+                yield from iter_localparam_decls(stmt.else_body.statements)
+        elif isinstance(stmt, ForStmt):
+            yield from iter_localparam_decls(stmt.body.statements)
+        elif isinstance(stmt, CaseStmt):
+            for ci in stmt.items:
+                yield from iter_localparam_decls(ci.body.statements)
 
 
 @dataclass
@@ -122,8 +153,7 @@ def _walk_stmt(stmt: Statement, syms: SymbolTable, decl_locs: dict[str, SourceLo
             _collect_expr_idents(stmt.array_range[0], syms.all_refs, stmt.loc)
             _collect_expr_idents(stmt.array_range[1], syms.all_refs, stmt.loc)
     elif isinstance(stmt, AssignStmt):
-        name = _collect_lvalue_name(stmt.target)
-        syms.all_refs.setdefault(name, []).append(stmt.loc)
+        syms.all_refs.setdefault(stmt.target.name, []).append(stmt.loc)
         for idx in stmt.target.indices:
             if isinstance(idx, tuple):
                 _collect_expr_idents(idx[0], syms.all_refs, stmt.loc)

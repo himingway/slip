@@ -133,9 +133,11 @@ def instance(inst: HDLInstance) -> str:
 
     line += f" {inst.inst_name}"
 
-    # Port connections
-    if inst.port_map:
-        visible = [(port, sig) for port, sig in inst.port_map if sig != "_"]
+    # Port connections.  The port-list parentheses are mandatory in
+    # SystemVerilog even when empty (e.g. `u1 ();`), and dangling `_`
+    # connections are omitted from the visible list.
+    visible = [(port, sig) for port, sig in inst.port_map if sig != "_"]
+    if visible:
         port_parts = []
         indent.increase()
         for i, (port, sig) in enumerate(visible):
@@ -143,6 +145,8 @@ def instance(inst: HDLInstance) -> str:
             port_parts.append(f"{indent.indent()}.{port}({sig}){comma}")
         indent.decrease()
         line += " (\n" + "\n".join(port_parts) + f"\n{indent.indent()})"
+    else:
+        line += " ()"
 
     line += ";"
     return line

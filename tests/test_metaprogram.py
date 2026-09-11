@@ -233,11 +233,11 @@ class TestGenInBlocks:
 class TestGenCodegen:
     def test_for_produces_assigns(self):
         sv = compile_source(
-            "module m (y) { `for (`i = 0; `i < 3; `i = `i + 1) { assign y = `i; } }"
+            "module m (y) { `for (`i = 0; `i < 3; `i = `i + 1) { logic b_`i; assign b_`i = `i; } assign y = b_2; }"
         )
         assert "m" in sv
         text = sv["m"]
-        assert text.count("assign") == 3
+        assert text.count("assign") == 4
 
     def test_if_selects_branch(self):
         sv = compile_source(
@@ -254,15 +254,16 @@ class TestGenCodegen:
     def test_for_with_param_sv(self):
         sv = compile_source(
             "module m #(param N = 2) (y) { "
-            "`for (`i = 0; `i < N; `i = `i + 1) { assign y = `i; } "
+            "`for (`i = 0; `i < N; `i = `i + 1) { logic b_`i; assign b_`i = `i; } "
+            "assign y = b_1; "
             "}"
         )
-        assert sv["m"].count("assign") == 2
+        assert sv["m"].count("assign") == 3
 
     def test_pyslang_valid_for(self):
         from pyslang import SyntaxTree, Compilation
         sv = compile_source(
-            "module m (y) { `for (`i = 0; `i < 2; `i = `i + 1) { assign y = `i; } }"
+            "module m (y) { `for (`i = 0; `i < 2; `i = `i + 1) { logic b_`i; assign b_`i = `i; } assign y = b_1; }"
         )["m"]
         tree = SyntaxTree.fromText(sv)
         comp = Compilation()
@@ -282,7 +283,8 @@ class TestGenFixtures:
 
     def test_gen_for_fixture_has_assigns(self):
         sv = compile_source((FIXTURES / "gen_for.slip").read_text())["gen_for_test"]
-        assert sv.count("assign") == 4
+        # 4 unrolled assigns (data_0..data_3) + 1 output assign
+        assert sv.count("assign") == 5
 
     def test_gen_if_fixture_compiles(self):
         sv = compile_source((FIXTURES / "gen_if.slip").read_text())
@@ -315,12 +317,12 @@ class TestGenCLI:
 
 class TestConstantFolding:
     def test_fold_subtraction_with_zero(self):
-        # W - `i - 1 when i=0 → should produce "W - 1" not "W - 0 - 1"
+        # W - 1 - `i when i=0 → should produce "W - 1" not "W - 0 - 1"
         sv = compile_source(
-            "module m #(param W = 8) (y) { "
-            "logic [W-1:0] y; "
+            "module m #(param W = 8) (y, d) { "
+            "logic [W-1:0] y; logic [W-1:0] d; "
             "`for (`i = 0; `i < 1; `i = `i + 1) { "
-            "assign y = y >> (W - 1 - `i); "
+            "assign y = d >> (W - 1 - `i); "
             "} }"
         )
         text = sv["m"]
@@ -368,11 +370,11 @@ class TestConstantFolding:
     def test_fold_pipeline_param_width(self, width):
         # W - 1 - `i: when i=0 → W - 1, when i=1 → W - 2
         src = (
-            "module m #(param W = " + str(width) + ") (y) { "
-            "logic [W-1:0] y; "
+            "module m #(param W = " + str(width) + ") (y, d) { "
+            "logic [W-1:0] y; logic [W-1:0] d; "
             "`for (`i = 0; `i < 2; `i = `i + 1) { "
-            "assign y = y >> (W - 1 - `i); "
-            "} }"
+            "logic w_`i; assign w_`i = d >> (W - 1 - `i); "
+            "} assign y = w_1; }"
         )
         sv = compile_source(src)
         text = sv["m"]

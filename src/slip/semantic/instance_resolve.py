@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import warnings
+from dataclasses import replace
 from pathlib import Path
 
 from slip.errors.semantic import SlipSemanticError
@@ -27,6 +28,22 @@ def resolve_instances(
     return results
 
 
+def _inst_loc(inst: HDLInstance):
+    if inst.loc is not None:
+        return inst.loc.file, inst.loc.line, inst.loc.col
+    return "<instance>", 0, 0
+
+
+def _unknown_module_error(inst: HDLInstance) -> SlipSemanticError:
+    file, line, col = _inst_loc(inst)
+    return SlipSemanticError(
+        file, line, col,
+        f"cannot resolve target module '{inst.target}' of instance "
+        f"'{inst.inst_name}': not defined in the current compilation and "
+        f"not found in the IP index (pass -ip/-f if this is external IP)"
+    )
+
+
 def _check_required_ports(
     inst: HDLInstance,
     module_index: dict[str, HDLModule],
@@ -43,18 +60,32 @@ def _check_required_ports(
     target = module_index[inst.target]
 
     connected_ports = {name for name, _sig in inst.port_map}
-    all_connected = connected_ports
 
     for port in target.ports:
         if port.direction != "input":
             continue
-        if port.name in all_connected:
+        if port.name in connected_ports:
             continue
+        file, line, col = _inst_loc(inst)
         raise SlipSemanticError(
-            "<instance>", 0, 0,
+            file, line, col,
             f"unconnected input port '{port.name}' of module "
             f"'{inst.target}' (instance '{inst.inst_name}')"
         )
+
+
+def _check_duplicate_connections(inst: HDLInstance) -> None:
+    """Reject connecting the same target port twice on one instance."""
+    seen: set[str] = set()
+    for name, _sig in inst.port_map:
+        if name in seen:
+            file, line, col = _inst_loc(inst)
+            raise SlipSemanticError(
+                file, line, col,
+                f"duplicate connection to port '{name}' of instance "
+                f"'{inst.inst_name}' (module '{inst.target}')"
+            )
+        seen.add(name)
 
 
 def _resolve_module(
@@ -72,20 +103,32 @@ def _resolve_module(
             lp_names = _get_target_localparams(inst.target, module_index, ip_index)
             for pname, _ in inst.param_map:
                 if pname in lp_names:
+                    file, line, col = _inst_loc(inst)
                     raise SlipSemanticError(
-                        "<instance>", 0, 0,
+                        file, line, col,
                         f"cannot override localparam '{pname}' of module "
                         f"'{inst.target}' (instance '{inst.inst_name}')"
                     )
 
-        # Infer widths from target ports for explicit connections
-        try:
-            target_ports = _get_target_ports(inst.target, module_index, ip_index)
-            port_widths = {name: w for name, _, w in target_ports if w is not None}
-            _apply_width_inference(inst.port_map, port_widths, new_signals, inst.target)
-            _apply_width_inference_ports(inst.port_map, port_widths, new_ports, inst.target)
-        except SlipSemanticError:
-            pass  # external module not resolvable — skip width inference
+        _check_duplicate_connections(inst)
+
+        # Resolve target ports — an unknown module is always an error, so
+        # typos are caught even when every port is connected by name.
+        if inst.target in module_index:
+            target = module_index[inst.target]
+            target_ports = [
+                (p.name, p.direction, p.type_.width_sv if p.type_ else None)
+                for p in target.ports
+            ]
+        else:
+            ports = ip_index.get_ports(inst.target)
+            if ports is None:
+                raise _unknown_module_error(inst)
+            target_ports = ports
+
+        _apply_connection_inference(
+            inst.port_map, target_ports, new_signals, new_ports, inst.target
+        )
 
         if not inst.regex_rules:
             # Check required ports for explicit (non-regex) connections
@@ -93,7 +136,7 @@ def _resolve_module(
             new_instances.append(inst)
             continue
         expanded_inst, extra_signals = _expand_regex_connections(
-            inst, mod, module_index, ip_index, new_signals, new_ports
+            inst, mod, target_ports, new_signals, new_ports
         )
         new_instances.append(expanded_inst)
         new_signals.extend(extra_signals)
@@ -110,78 +153,61 @@ def _resolve_module(
     )
 
 
-def _apply_width_inference(
+def _apply_connection_inference(
     port_map: tuple[tuple[str, str], ...],
-    port_widths: dict[str, str],
+    target_ports: list[tuple[str, str, str | None]],
     signals: list[HDLSignal],
-    target_name: str,
-) -> None:
-    """Inherit port widths for signals that have no declared width."""
-    for port_name, signal_name in port_map:
-        if signal_name == "_":
-            continue
-        port_w = port_widths.get(port_name)
-        if port_w is None:
-            continue
-        for i, sig in enumerate(signals):
-            if sig.name == signal_name and (sig.type_ is None or sig.type_.width_sv is None):
-                signals[i] = HDLSignal(
-                    sig.name,
-                    type_=HDLType(width_sv=port_w),
-                    array_dim=sig.array_dim,
-                    width_inferred_from=f"{target_name}.{port_name}",
-                )
-                break
-
-
-def _apply_width_inference_ports(
-    port_map: tuple[tuple[str, str], ...],
-    port_widths: dict[str, str],
     ports: list,
     target_name: str,
 ) -> None:
-    """Inherit port widths for ports that have no declared width."""
+    """Propagate target-port information into connected signals and ports.
+
+    - Width: a width-less connected signal/port inherits the target port's
+      width (annotated with "width from <target>.<port>"), preserving an
+      explicit ``signed`` qualifier.
+    - Direction: a local port connected to a target *output* is driven by
+      that instance and must be an output (fixes pass-through wrappers
+      whose only driver is a child module's output port).
+    """
+    target_info = {name: (direction, width) for name, direction, width in target_ports}
+
     for port_name, signal_name in port_map:
         if signal_name == "_":
             continue
-        port_w = port_widths.get(port_name)
-        if port_w is None:
+        info = target_info.get(port_name)
+        if info is None:
             continue
-        for i, p in enumerate(ports):
-            if p.name == signal_name and (p.type_ is None or p.type_.width_sv is None):
-                ports[i] = HDLPort(
-                    name=p.name,
-                    direction=p.direction,
-                    type_=HDLType(width_sv=port_w),
-                    width_inferred_from=f"{target_name}.{port_name}",
-                    declared=p.declared,
-                )
-                break
+        t_direction, t_width = info
 
+        if t_width is not None:
+            for i, sig in enumerate(signals):
+                if sig.name == signal_name and (sig.type_ is None or sig.type_.width_sv is None):
+                    is_signed = sig.type_.is_signed if sig.type_ else False
+                    signals[i] = HDLSignal(
+                        sig.name,
+                        type_=HDLType(width_sv=t_width, is_signed=is_signed),
+                        array_dim=sig.array_dim,
+                        width_inferred_from=f"{target_name}.{port_name}",
+                    )
+                    break
+            for i, p in enumerate(ports):
+                if p.name == signal_name and (p.type_ is None or p.type_.width_sv is None):
+                    is_signed = p.type_.is_signed if p.type_ else False
+                    ports[i] = HDLPort(
+                        name=p.name,
+                        direction=p.direction,
+                        type_=HDLType(width_sv=t_width, is_signed=is_signed),
+                        array_dim=p.array_dim,
+                        width_inferred_from=f"{target_name}.{port_name}",
+                        declared=p.declared,
+                    )
+                    break
 
-def _get_target_ports(
-    target_name: str,
-    module_index: dict[str, HDLModule],
-    ip_index: IPIndex,
-) -> list[tuple[str, str, str | None]]:
-    """Get target module ports as (name, direction, width_sv) tuples."""
-    # Check local modules first
-    if target_name in module_index:
-        target = module_index[target_name]
-        return [
-            (p.name, p.direction, p.type_.width_sv if p.type_ else None)
-            for p in target.ports
-        ]
-
-    # Check IP index
-    ports = ip_index.get_ports(target_name)
-    if ports is not None:
-        return ports
-
-    raise SlipSemanticError(
-        "<instance>", 0, 0,
-        f"cannot resolve target module '{target_name}'"
-    )
+        if t_direction == "output":
+            for i, p in enumerate(ports):
+                if p.name == signal_name and p.direction == "input":
+                    ports[i] = replace(p, direction="output")
+                    break
 
 
 def _get_target_localparams(
@@ -201,14 +227,11 @@ def _get_target_localparams(
 def _expand_regex_connections(
     inst: HDLInstance,
     parent_mod: HDLModule,
-    module_index: dict[str, HDLModule],
-    ip_index: IPIndex,
+    target_ports: list[tuple[str, str, str | None]],
     existing_signals: list[HDLSignal],
     existing_ports: list,
 ) -> tuple[HDLInstance, list[HDLSignal]]:
     """Expand regex port connections for a single instance."""
-    target_ports = _get_target_ports(inst.target, module_index, ip_index)
-
     port_map = dict(inst.port_map)
 
     signal_names_in_scope = (
@@ -229,18 +252,22 @@ def _expand_regex_connections(
         matched = False
         for port_regex, signal_regex in inst.regex_rules:
             if re.fullmatch(port_regex, port_name):
-                candidate = evaluate_replacement(signal_regex, port_name, port_regex)
+                try:
+                    candidate = evaluate_replacement(signal_regex, port_name, port_regex)
+                except ValueError as e:
+                    file, line, col = _inst_loc(inst)
+                    raise SlipSemanticError(
+                        file, line, col,
+                        f"regex port mapping error for port '{port_name}' of "
+                        f"instance '{inst.inst_name}': {e}"
+                    ) from e
                 inferred_from = f"{inst.target}.{port_name}"
                 if candidate in signal_names_in_scope:
                     port_map[port_name] = candidate
-                    pw = {port_name: width_sv} if width_sv else {}
-                    _apply_width_inference(
-                        ((port_name, candidate),), pw,
-                        existing_signals, inst.target,
-                    )
-                    _apply_width_inference_ports(
-                        ((port_name, candidate),), pw,
-                        existing_ports, inst.target,
+                    _apply_connection_inference(
+                        ((port_name, candidate),),
+                        [(port_name, direction, width_sv)],
+                        existing_signals, existing_ports, inst.target,
                     )
                     matched = True
                     break
@@ -265,8 +292,9 @@ def _expand_regex_connections(
                 active_rules = ", ".join(
                     f"\"{pr}\" => \"{sr}\"" for pr, sr in inst.regex_rules
                 ) if inst.regex_rules else "(none)"
+                file, line, col = _inst_loc(inst)
                 raise SlipSemanticError(
-                    "<instance>", 0, 0,
+                    file, line, col,
                     f"unconnected input port '{port_name}' in instance "
                     f"'{inst.inst_name}' of module '{inst.target}' — "
                     f"no explicit connection or regex match "
@@ -279,5 +307,6 @@ def _expand_regex_connections(
         param_map=inst.param_map,
         port_map=tuple(port_map.items()),
         regex_rules=(),
+        loc=inst.loc,
     )
     return updated_inst, implicit_signals

@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Union
 
 from slip.ast.module import Module
+from slip.errors.semantic import SlipSemanticError
 from slip.ir import HDLModule
 from slip.parser.parser import CompilationUnit
 from slip.semantic import driver_analysis, seq_correction, symbol_collector
@@ -42,7 +43,15 @@ class SemanticAnalyzer:
         # Phase 1: Process modules
         expanded_modules: list[Module] = []
         results: list[HDLModule] = []
+        seen_names: set[str] = set()
         for mod in modules:
+            if mod.name in seen_names:
+                raise SlipSemanticError(
+                    mod.loc.file, mod.loc.line, mod.loc.col,
+                    f"duplicate module definition: '{mod.name}' is defined "
+                    f"more than once in the compilation unit"
+                )
+            seen_names.add(mod.name)
             expanded = expand_module(mod)
             expanded_modules.append(expanded)
             results.append(self._analyze_module(expanded))

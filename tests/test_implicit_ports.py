@@ -162,12 +162,11 @@ module top {
         # When instance uses same-name shorthand, signals should be inferred as ports
         # Check that the instance is present
         assert 'inner u1' in text
-        # Check that a, b, y are inferred as ports (not declared as logic)
-        # Note: direction inference depends on driver analysis of current module only
-        # Since a, b, y are only used in instance connections (readers), they're inputs
+        # a and b are read by the instance → inputs; y is driven by inner's
+        # output port → output (no longer the inverted 'input logic y')
         assert 'input logic a' in text
         assert 'input logic b' in text
-        assert 'input logic y' in text
+        assert 'output logic y' in text
     
     def test_implicit_ports_empty_module(self):
         """Module with no body should have no ports."""

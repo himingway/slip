@@ -143,14 +143,23 @@ class TestCompoundAssignmentCodegen:
     """Compound assignments generate correct SystemVerilog output."""
 
     def test_plus_eq_generates_expanded_sv(self):
-        sv = compile_source("module m { a += 1; }")
+        # Compound assignments are inherently self-referential, so the
+        # valid context is a procedural block (a register increment).
+        sv = compile_source("module m (clk) { logic [7:0] a; seq (clk) { a += 1; } }")
         sv_text = sv["m"]
-        assert "a = a + 1" in sv_text
+        assert "a <= a + 1" in sv_text
 
     def test_minus_eq_generates_expanded_sv(self):
-        sv = compile_source("module m { a -= 1; }")
+        sv = compile_source("module m (clk) { logic [7:0] a; seq (clk) { a -= 1; } }")
         sv_text = sv["m"]
-        assert "a = a - 1" in sv_text
+        assert "a <= a - 1" in sv_text
+
+    def test_self_referential_continuous_assign_is_error(self):
+        # `a += 1;` at module level desugars to `assign a = a + 1;`,
+        # a genuine combinational loop that must be rejected.
+        from slip.errors.semantic import SlipSemanticError
+        with pytest.raises(SlipSemanticError, match="combinational loop"):
+            compile_source("module m { logic [7:0] a; a += 1; }")
 
     def test_compound_in_seq_block(self):
         """Compound assignment inside seq block should get non-blocking (<=)."""
@@ -186,10 +195,10 @@ class TestCompoundAssignmentCodegen:
         ],
     )
     def test_all_compound_operators_codegen(self, op, expected_op):
-        source = f"module m {{ a {op} 1; }}"
+        source = f"module m (clk) {{ logic [7:0] a; seq (clk) {{ a {op} 1; }} }}"
         sv = compile_source(source)
         sv_text = sv["m"]
-        assert f"a = a {expected_op} 1" in sv_text
+        assert f"a <= a {expected_op} 1" in sv_text
 
 
 # ── pyslang validation ──────────────────────────────────────────────
@@ -199,10 +208,11 @@ class TestCompoundAssignmentValidation:
     """Generated SV from compound assignments validates with pyslang."""
 
     def test_plus_eq_valid_sv(self):
-        sv = compile_source("module m { logic [7:0] a; a += 1; }")
+        sv = compile_source(
+            "module m (clk) { logic [7:0] a; seq (clk) { a += 1; } }"
+        )
         sv_text = sv["m"]
         errors = validate_sv(sv_text, allow_missing_modules=True)
-        # Filter out undeclared identifier errors for 'a' if any
         assert errors == []
 
     def test_compound_in_seq_valid_sv(self):

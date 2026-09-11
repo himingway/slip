@@ -305,7 +305,8 @@ class TestGenFullPipeline:
         from pyslang import SyntaxTree, Compilation
         sv = compile_source(
             "module m (y) { "
-            "`for (`i = 0; `i < 4; `i = `i + 1) { assign y = `i; } "
+            "logic [3:0] y; "
+            "`for (`i = 0; `i < 4; `i = `i + 1) { assign y[`i] = 1'b1; } "
             "}"
         )
         tree = SyntaxTree.fromText(sv["m"])
@@ -332,7 +333,8 @@ class TestGenFullPipeline:
     def test_for_with_params_sv(self):
         sv = compile_source(
             "module m #(param N = 3) (y) { "
-            "`for (`i = 0; `i < N; `i = `i + 1) { assign y = `i; } "
+            "logic [N-1:0] y; "
+            "`for (`i = 0; `i < N; `i = `i + 1) { assign y[`i] = 1'b1; } "
             "}"
         )
         assert sv["m"].count("assign") == 3
@@ -366,11 +368,11 @@ class TestGenFullPipeline:
         sv = compile_source(
             "module child #(param W = 4) (a, b) { "
             "logic [W-1:0] a; logic [W-1:0] b; "
-            "`for (`i = 0; `i < W; `i = `i + 1) { assign b = a; } "
+            "`for (`i = 0; `i < W; `i = `i + 1) { assign b[`i] = a[`i]; } "
             "} "
             "module parent (x, y) { "
             "logic [7:0] x; logic [7:0] y; "
-            "`for (`i = 0; `i < 2; `i = `i + 1) { assign y = x; } "
+            "`for (`i = 0; `i < 2; `i = `i + 1) { assign y[`i] = x[`i]; } "
             "}"
         )
         assert "child" in sv
@@ -626,7 +628,8 @@ class TestCombinedGenInstance:
         from pyslang import SyntaxTree, Compilation
         sv = compile_source(
             "module m #(param N = 4) (y) { "
-            "`for (`i = 0; `i < N; `i = `i + 1) { assign y = `i; } "
+            "logic [N-1:0] y; "
+            "`for (`i = 0; `i < N; `i = `i + 1) { assign y[`i] = 1'b1; } "
             "}"
         )
         tree = SyntaxTree.fromText(sv["m"])
@@ -640,7 +643,8 @@ class TestCombinedGenInstance:
             r'module child (clk, din, dout) { logic clk; logic [7:0] din; logic [7:0] dout; assign dout = din; }'
             r' module parent #(param W = 8) (clk, ext_din, ext_dout) {'
             r'  logic clk; logic [W-1:0] ext_din; logic [W-1:0] ext_dout;'
-            r'  `for (`i = 0; `i < 2; `i = `i + 1) { assign ext_dout = ext_din; }'
+            r'  logic [1:0] mask;'
+            r'  `for (`i = 0; `i < 2; `i = `i + 1) { assign mask[`i] = ext_din[`i]; }'
             r'  child u1 { .clk, "d(.*)" => "ext_d\1" };'
             r'}'
         )

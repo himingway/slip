@@ -15,8 +15,7 @@ def topological_sort(modules: Sequence[HDLModule]) -> list[HDLModule]:
     If module A instantiates module B (and B is in *modules*), then B
     will appear before A in the result.
 
-    Uses Kahn's algorithm.  Cycles are broken by emitting remaining
-    modules in their original order, with a warning.
+    Uses Kahn's algorithm.  Cyclic dependencies raise SlipSemanticError.
     """
     if not modules:
         return []
@@ -80,13 +79,40 @@ class CodeGenerator:
         results: dict[str, str] = {}
         sorted_modules = topological_sort(ir_modules)
 
+        if output_dir is not None:
+            output_dir.mkdir(parents=True, exist_ok=True)
+
         for mod in sorted_modules:
             sv_text = emit(mod)
             results[mod.name] = sv_text
 
             if output_dir is not None:
-                output_dir.mkdir(parents=True, exist_ok=True)
                 out_file = output_dir / f"{mod.name}.sv"
-                out_file.write_text(sv_text)
+                out_file.write_text(sv_text, encoding="utf-8")
+
+        if output_dir is not None:
+            _warn_stale_outputs(output_dir, set(results))
 
         return results
+
+
+def _warn_stale_outputs(output_dir: Path, written: set[str]) -> None:
+    """Warn about .sv files in the output directory this run did not write.
+
+    Stale modules (e.g. left behind after a module was renamed or deleted)
+    get picked up by downstream glob-based compile flows, so surface them
+    rather than letting them silently mix into the build.
+    """
+    stale = sorted(
+        p.name for p in output_dir.glob("*.sv")
+        if p.stem not in written
+    )
+    if stale:
+        import warnings
+        warnings.warn(
+            f"output directory {output_dir} contains SystemVerilog files not "
+            f"produced by this run: {', '.join(stale)}. Remove them if they "
+            f"are stale — downstream tools that compile the whole directory "
+            f"would include them.",
+            stacklevel=2,
+        )

@@ -74,11 +74,14 @@ def emit(mod: HDLModule) -> str:
                 f"pyslang validation failed:\n{report}"
             )
     except ImportError:
-        warnings.warn(
-            "pyslang not installed — skipping SystemVerilog validation. "
-            "Install pyslang for compile-time error checking.",
-            stacklevel=2,
-        )
+        # Warn once per process, not once per module
+        if not getattr(emit, "_warned_no_pyslang", False):
+            emit._warned_no_pyslang = True
+            warnings.warn(
+                "pyslang not installed — skipping SystemVerilog validation. "
+                "Install pyslang for compile-time error checking.",
+                stacklevel=2,
+            )
 
     return sv_text
 

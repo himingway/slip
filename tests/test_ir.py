@@ -57,7 +57,11 @@ class TestHDLPort:
 
     def test_decl_sv_width_signed(self):
         p = HDLPort("val", "output", HDLType(width_sv="[15:0]", is_signed=True))
-        assert p.decl_sv() == "output logic [15:0] val"
+        assert p.decl_sv() == "output logic signed [15:0] val"
+
+    def test_decl_sv_width_array(self):
+        p = HDLPort("mem", "output", HDLType(width_sv="[7:0]"), array_dim="[0:3]")
+        assert p.decl_sv() == "output logic [7:0] mem [0:3]"
 
 
 class TestHDLSignal:

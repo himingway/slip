@@ -42,9 +42,43 @@ class TestCodeGeneration:
         assert "logic" in text
 
     def test_instance(self):
-        sv = compile_source("module m (clk) { Other #(.W(8)) inst1 { .clk(clk) }; }")
+        sv = compile_source(
+            "module Other #(param W = 8) (clk) { logic clk; } "
+            "module m (clk) { Other #(.W(8)) inst1 { .clk(clk) }; }"
+        )
         text = sv["m"]
         assert "Other" in text
         assert "inst1" in text
         assert ".W(8)" in text
         assert ".clk(clk)" in text
+
+
+class TestStaleOutputWarning:
+    """Stale .sv files in the output directory are surfaced, not silent."""
+
+    def test_stale_file_warns(self, tmp_path):
+        import warnings
+        from conftest import parse_source
+        from slip.semantic import SemanticAnalyzer
+        from slip.codegen import CodeGenerator
+
+        (tmp_path / "old_module.sv").write_text("module old_module; endmodule\n")
+        modules = parse_source("module m (y) { logic y; assign y = 1'b0; }")
+        ir = SemanticAnalyzer().analyze(modules)
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            CodeGenerator().generate(ir, output_dir=tmp_path)
+        assert any("not produced by this run" in str(x.message) for x in w)
+
+    def test_no_warning_when_clean(self, tmp_path):
+        import warnings
+        from conftest import parse_source
+        from slip.semantic import SemanticAnalyzer
+        from slip.codegen import CodeGenerator
+
+        modules = parse_source("module m (y) { logic y; assign y = 1'b0; }")
+        ir = SemanticAnalyzer().analyze(modules)
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            CodeGenerator().generate(ir, output_dir=tmp_path)
+        assert not any("not produced by this run" in str(x.message) for x in w)

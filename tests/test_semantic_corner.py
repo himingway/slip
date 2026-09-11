@@ -10,7 +10,7 @@ from slip.ast.statements import (
 )
 from slip.semantic.symbol_collector import collect, SymbolTable
 from slip.semantic.driver_analysis import analyze, infer_port_directions
-from slip.semantic.seq_correction import correct, _correct_stmt
+from slip.semantic.seq_correction import correct, _correct_seq
 from slip.semantic.ir_builder import build
 from slip.errors.semantic import SlipSemanticError
 
@@ -154,19 +154,22 @@ class TestSeqCorrection:
         assert "<=" in sv["m"]
 
     def test_correct_stmt_ifstmt(self):
-        # Direct test: _correct_stmt on IfStmt
+        # IfStmt nested inside a seq block converts to nonblocking
         LOC = SourceLocation("test.slip", 1, 1)
         assign = AssignStmt(LOC, target=LValue(LOC, "q", ()),
                             value=IdentExpr(LOC, "d"), is_nonblocking=False)
         body = BlockStmt(LOC, statements=(assign,))
         if_stmt = IfStmt(LOC, cond=IdentExpr(LOC, "en"),
                          then_body=body, else_body=None)
-        result = _correct_stmt(if_stmt)
-        assert isinstance(result, IfStmt)
-        assert result.then_body.statements[0].is_nonblocking is True
+        seq_body = BlockStmt(LOC, statements=(if_stmt,))
+        seq = SeqBlock(LOC, clock="clk", reset=None, body=seq_body)
+        result = _correct_seq(seq)
+        inner_if = result.body.statements[0]
+        assert isinstance(inner_if, IfStmt)
+        assert inner_if.then_body.statements[0].is_nonblocking is True
 
     def test_correct_stmt_forstmt(self):
-        # Direct test: _correct_stmt on ForStmt
+        # ForStmt nested inside a seq block converts to nonblocking
         LOC = SourceLocation("test.slip", 1, 1)
         assign = AssignStmt(LOC, target=LValue(LOC, "q", ()),
                             value=IdentExpr(LOC, "d"), is_nonblocking=False)
@@ -174,12 +177,15 @@ class TestSeqCorrection:
         for_stmt = ForStmt(LOC, var="i", init=IntLiteralExpr(LOC, "0"),
                            cond=IntLiteralExpr(LOC, "1"), step_var="i",
                            step=IntLiteralExpr(LOC, "1"), body=body)
-        result = _correct_stmt(for_stmt)
-        assert isinstance(result, ForStmt)
-        assert result.body.statements[0].is_nonblocking is True
+        seq_body = BlockStmt(LOC, statements=(for_stmt,))
+        seq = SeqBlock(LOC, clock="clk", reset=None, body=seq_body)
+        result = _correct_seq(seq)
+        inner_for = result.body.statements[0]
+        assert isinstance(inner_for, ForStmt)
+        assert inner_for.body.statements[0].is_nonblocking is True
 
     def test_correct_assign_in_stmt_nested_if(self):
-        # IfStmt nested inside a seq block body (exercises _correct_assign_in_stmt)
+        # IfStmt nested inside a seq block body
         src = (
             "module m (clk, rst_n, en, d, q) { "
             "logic [7:0] d; logic [7:0] q; "
@@ -200,8 +206,8 @@ class TestSeqCorrection:
                            cond=IntLiteralExpr(LOC, "1"), step_var="i",
                            step=IntLiteralExpr(LOC, "1"), body=body)
         seq_body = BlockStmt(LOC, statements=(for_stmt,))
-        seq = SeqBlock(LOC, clock=IdentExpr(LOC, "clk"), reset=None, body=seq_body)
-        result = _correct_stmt(seq)
+        seq = SeqBlock(LOC, clock="clk", reset=None, body=seq_body)
+        result = _correct_seq(seq)
         inner_for = result.body.statements[0]
         assert isinstance(inner_for, ForStmt)
         assert inner_for.body.statements[0].is_nonblocking is True

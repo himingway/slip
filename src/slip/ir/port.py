@@ -10,6 +10,7 @@ class HDLPort:
     name: str
     direction: str = "input"
     type_: HDLType | None = None
+    array_dim: str | None = None  # SV text like "[0:3]"
     width_inferred_from: str | None = None  # e.g. "child.data_out"
     declared: bool = True  # False for implicit ports
 
@@ -21,8 +22,12 @@ class HDLPort:
             )
 
     def decl_sv(self) -> str:
-        if self.type_ and self.type_.width_sv:
-            return f"{self.direction} logic {self.type_.width_sv} {self.name}"
-        if self.type_ and self.type_.is_signed:
-            return f"{self.direction} logic signed {self.name}"
-        return f"{self.direction} logic {self.name}"
+        width = ""
+        has_width = self.type_ and self.type_.width_sv
+        if has_width:
+            signed = "signed " if self.type_.is_signed else ""
+            width = f"{signed}{self.type_.width_sv} "
+        elif self.type_ and self.type_.is_signed:
+            width = "signed "
+        arr = f" {self.array_dim}" if self.array_dim else ""
+        return f"{self.direction} logic {width}{self.name}{arr}"

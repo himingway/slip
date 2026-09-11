@@ -28,13 +28,15 @@ LOC = SourceLocation("test.slip", 1, 1)
 # ── _eval_int: division/modulo by zero ──────────────────────────
 
 class TestEvalDivModByZero:
-    def test_div_by_zero_returns_zero(self):
+    def test_div_by_zero_raises(self):
         expr = BinaryExpr(LOC, "/", IntLiteralExpr(LOC, "10"), IntLiteralExpr(LOC, "0"))
-        assert _eval_int(expr, {}, LOC) == 0
+        with pytest.raises(SlipSemanticError, match="division by zero"):
+            _eval_int(expr, {}, LOC)
 
-    def test_mod_by_zero_returns_zero(self):
+    def test_mod_by_zero_raises(self):
         expr = BinaryExpr(LOC, "%", IntLiteralExpr(LOC, "10"), IntLiteralExpr(LOC, "0"))
-        assert _eval_int(expr, {}, LOC) == 0
+        with pytest.raises(SlipSemanticError, match="division by zero"):
+            _eval_int(expr, {}, LOC)
 
 
 # ── _eval_int: untested operators ───────────────────────────────
@@ -343,19 +345,22 @@ class TestExpandInContainers:
         assert "y_0" in sv["m"]
 
     def test_nested_gen_for(self):
-        # Nested gen_for with separate signal names per iteration
+        # Nested gen_for with separate signal names per (i, j) iteration
         src = (
             "module m () { "
-            "logic a0; logic a1; logic b0; logic b1; "
+            "logic a0; logic a1; "
+            "logic b0_0; logic b0_1; logic b1_0; logic b1_1; "
             "`for (`i = 0; `i < 2; `i = `i + 1) { "
             "assign a`i = `i; "
             "`for (`j = 0; `j < 2; `j = `j + 1) { "
-            "assign b`j = `i + `j; "
+            "assign b`i_`j = `i + `j; "
             "} "
             "} }"
         )
         sv = compile_source(src)
         assert "a0" in sv["m"]
         assert "a1" in sv["m"]
-        assert "b0" in sv["m"]
-        assert "b1" in sv["m"]
+        assert "b0_0" in sv["m"]
+        assert "b0_1" in sv["m"]
+        assert "b1_0" in sv["m"]
+        assert "b1_1" in sv["m"]

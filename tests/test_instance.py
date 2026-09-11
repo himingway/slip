@@ -17,6 +17,9 @@ from conftest import FIXTURES, compile_source, parse_source as parse_modules
 _REGEX_CHILD = r'module child (clk, data_in, data_out) { logic clk; logic [7:0] data_in; logic [7:0] data_out; assign data_out = data_in; }'
 _REGEX_PARENT = r'module parent (clk, fifo_in, fifo_out) { logic clk; logic [7:0] fifo_in; logic [7:0] fifo_out; child u1 { .clk, "data_(.*)" => "fifo_\1" }; }'
 
+# Minimal resolvable target module for instantiation tests
+_OTHER_MODULE = "module Other #(param W = 8) (clk) { logic clk; }"
+
 
 # ────────────────────────────────────────────────────────────────
 # Parser: connection forms
@@ -68,19 +71,21 @@ class TestConnectionParsing:
 class TestIRCapture:
     def test_named_only_no_regex(self):
         modules = parse_modules(
-            "module m (clk) { Other inst1 { .clk(clk) }; }"
+            _OTHER_MODULE + " module m (clk) { Other inst1 { .clk(clk) }; }"
         )
         ir = SemanticAnalyzer().analyze(modules)
-        inst = ir[0].instances[0]
+        m_mod = [mod for mod in ir if mod.name == "m"][0]
+        inst = m_mod.instances[0]
         assert len(inst.regex_rules) == 0
         assert inst.port_map == (("clk", "clk"),)
 
     def test_same_name_in_port_map(self):
         modules = parse_modules(
-            "module m (clk) { Other inst1 { .clk }; }"
+            _OTHER_MODULE + " module m (clk) { Other inst1 { .clk }; }"
         )
         ir = SemanticAnalyzer().analyze(modules)
-        inst = ir[0].instances[0]
+        m_mod = [mod for mod in ir if mod.name == "m"][0]
+        inst = m_mod.instances[0]
         assert inst.port_map == (("clk", "clk"),)
 
     def test_regex_captured(self):
@@ -159,7 +164,7 @@ class TestInstanceResolve:
 class TestInstanceCodegen:
     def test_named_connection_sv(self):
         sv = compile_source(
-            "module m (clk) { Other inst1 { .clk(clk) }; }"
+            _OTHER_MODULE + " module m (clk) { Other inst1 { .clk(clk) }; }"
         )
         text = sv["m"]
         assert "Other" in text
@@ -168,13 +173,13 @@ class TestInstanceCodegen:
 
     def test_same_name_sv(self):
         sv = compile_source(
-            "module m (clk) { Other inst1 { .clk }; }"
+            _OTHER_MODULE + " module m (clk) { Other inst1 { .clk }; }"
         )
         assert ".clk(clk)" in sv["m"]
 
     def test_with_params_sv(self):
         sv = compile_source(
-            "module m (clk) { Other #(.W(8)) inst1 { .clk(clk) }; }"
+            _OTHER_MODULE + " module m (clk) { Other #(.W(8)) inst1 { .clk(clk) }; }"
         )
         assert ".W(8)" in sv["m"]
 
@@ -264,12 +269,15 @@ class TestWidthInference:
         assert "width from child.data_out" in text
 
     def test_regex_existing_signal_inherits_width(self):
-        """Pre-declared port without width gets updated via regex match."""
+        """Pre-declared port without width gets updated via regex match.
+
+        bus_out is driven by child's *output* port, so it is itself an
+        output (not the inverted 'input' the old inference produced)."""
         child = r'module child (clk, data_out) { logic clk; logic [13:0] data_out; assign data_out = 0; }'
         parent = r'module parent (clk, bus_out) { logic clk; logic bus_out; child u1 { .clk, "data_(.*)" => "bus_\1" }; }'
         sv = compile_source(child + " " + parent)
         text = sv["parent"]
-        assert "input logic [13:0] bus_out" in text
+        assert "output logic [13:0] bus_out" in text
         assert "// width from child.data_out" in text
 
     def test_mixed_connections_width_inference(self):
@@ -280,17 +288,15 @@ class TestWidthInference:
         text = sv["parent"]
         assert "input logic [3:0] sig_a" in text
         assert "// width from child.a_in" in text
-        assert "input logic [5:0] sig_b" in text
+        assert "output logic [5:0] sig_b" in text
         assert "// width from child.b_out" in text
         assert "logic [7:0] my_out;" in text
         assert "implicit" in text
         assert "width from child.c_out" in text
 
-    def test_external_module_no_width_annotation(self):
-        """External (unresolvable) module — no annotation, width stays 1-bit."""
-        sv = compile_source(
-            "module m (clk, sig) { logic clk; logic sig; ExternalIP u1 { .clk, .port(sig) }; }"
-        )
-        text = sv["m"]
-        assert "input logic sig" in text
-        assert "width from" not in text
+    def test_unresolvable_module_is_error(self):
+        """A module neither defined locally nor found in -ip/-f is rejected."""
+        with pytest.raises(SlipSemanticError, match="cannot resolve target module"):
+            compile_source(
+                "module m (clk, sig) { logic clk; logic sig; ExternalIP u1 { .clk, .port(sig) }; }"
+            )

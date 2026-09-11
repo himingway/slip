@@ -5,8 +5,6 @@ module arbiter #(param N = 4) (clk, rst_n, req, gnt) {
     logic [N-1:0] masked_req;
     logic [N-1:0] prio;
 
-    assign prio = {prio[N-2:0], prio[N-1]};
-
     assign masked_req = req & ~prio;
 
     seq (clk, neg: rst_n) {
@@ -23,6 +21,7 @@ module arbiter #(param N = 4) (clk, rst_n, req, gnt) {
                     gnt = 0;
                 }
             }
+            prio = {prio[N-2:0], prio[N-1]};
         }
     }
 }

@@ -18,6 +18,7 @@ from slip.ast.statements import (
     SignalDecl,
     Statement,
 )
+from slip.semantic.indexing import index_spec, refs_of_assign, specs_overlap
 from slip.semantic.symbol_collector import SymbolTable
 
 
@@ -32,7 +33,7 @@ def analyze(module: Module, symbols: SymbolTable) -> DriverInfo:
     info = DriverInfo()
 
     for stmt in module.body:
-        _scan_stmt(stmt, info, is_inside_seq=False)
+        _scan_stmt(stmt, info)
 
     return info
 
@@ -75,7 +76,7 @@ def _read_expr(expr: Expr, info: DriverInfo):
         _read_expr(expr.inner, info)
 
 
-def _scan_stmt(stmt: Statement, info: DriverInfo, is_inside_seq: bool):
+def _scan_stmt(stmt: Statement, info: DriverInfo):
     if isinstance(stmt, AssignStmt):
         info.drivers.add(stmt.target.name)
         _read_expr(stmt.value, info)
@@ -90,27 +91,27 @@ def _scan_stmt(stmt: Statement, info: DriverInfo, is_inside_seq: bool):
         if stmt.reset:
             info.readers.add(stmt.reset[1])
         for s in stmt.body.statements:
-            _scan_stmt(s, info, is_inside_seq=True)
+            _scan_stmt(s, info)
     elif isinstance(stmt, CombBlock):
         for s in stmt.body.statements:
-            _scan_stmt(s, info, is_inside_seq=False)
+            _scan_stmt(s, info)
     elif isinstance(stmt, InitialBlock):
         for s in stmt.body.statements:
-            _scan_stmt(s, info, is_inside_seq=False)
+            _scan_stmt(s, info)
     elif isinstance(stmt, IfStmt):
         _read_expr(stmt.cond, info)
         for s in stmt.then_body.statements:
-            _scan_stmt(s, info, is_inside_seq)
+            _scan_stmt(s, info)
         if stmt.else_body:
             for s in stmt.else_body.statements:
-                _scan_stmt(s, info, is_inside_seq)
+                _scan_stmt(s, info)
     elif isinstance(stmt, ForStmt):
         info.readers.add(stmt.var)
         _read_expr(stmt.init, info)
         _read_expr(stmt.cond, info)
         _read_expr(stmt.step, info)
         for s in stmt.body.statements:
-            _scan_stmt(s, info, is_inside_seq)
+            _scan_stmt(s, info)
     elif isinstance(stmt, SignalDecl):
         pass  # declarations don't drive or read
     elif isinstance(stmt, InstanceStmt):
@@ -122,71 +123,161 @@ def _scan_stmt(stmt: Statement, info: DriverInfo, is_inside_seq: bool):
                 info.readers.add(conn.port)
     elif isinstance(stmt, BlockStmt):
         for s in stmt.statements:
-            _scan_stmt(s, info, is_inside_seq)
+            _scan_stmt(s, info)
     elif isinstance(stmt, (GenForStmt, GenIfStmt)):
-        pass  # Phase 2
+        pass  # unreachable: metaprogramming expansion runs before analysis
     elif isinstance(stmt, CaseStmt):
         _read_expr(stmt.expr, info)
         for ci in stmt.items:
             for p in ci.patterns:
                 _read_expr(p, info)
             for s in ci.body.statements:
-                _scan_stmt(s, info, is_inside_seq)
+                _scan_stmt(s, info)
+
+
+# A graph node is (signal name, index spec) — the storage a value lives in.
+# Specs make element-disjoint accesses independent, so the standard
+# register-file / shift chains (``st[1] = st[0]``) are not mistaken for
+# feedback, while whole-variable or overlapping accesses still connect.
+def _fmt_node(node) -> str:
+    name, spec = node
+    if not spec:
+        return name
+    parts = []
+    for lo, hi in spec:
+        parts.append(str(lo) if lo == hi else f"{hi}:{lo}")
+    return f"{name}[{']['.join(parts)}]"
 
 
 def detect_comb_loops(module: Module) -> list[str]:
-    """Detect combinational loops within CombBlocks of a module.
+    """Detect combinational loops in a module.
 
-    Builds a dependency graph for each CombBlock: for ``target = value``,
-    ``target`` depends on every signal read in ``value``.  Uses DFS-based
-    cycle detection (O(V+E)) to find loops.
+    Builds one dependency graph per module covering every CombBlock plus all
+    top-level continuous assignments, so loops that cross block boundaries
+    are also caught.  Graph nodes are (signal, index spec) pairs, so
+    element-disjoint storage stays independent.
+
+    Within a CombBlock, SystemVerilog blocking (last-assignment-wins)
+    semantics apply: each read resolves to the most recent prior
+    assignment of the storage it reads, walking the driver chain
+    transitively.  A read with no prior assignment resolves to the
+    storage's pre-entry (external) value.  This keeps the
+    init-then-accumulate idiom (``y = 0; y = y + b;``) loop-free — the
+    read of ``y`` resolves to the constant 0 — while genuine feedback
+    (``y = y & a;``, or ``a = b; b = a;``) still produces a cycle.
+
+    Continuous assignments are concurrent processes, so each one is
+    analysed independently: a read sees the net values, i.e. whatever
+    every other assignment drives.
 
     Returns a list of error messages (one per cycle), or an empty list.
     """
-    errors: list[str] = []
+    graph: dict[tuple, set[tuple]] = {}
     for stmt in module.body:
         if isinstance(stmt, CombBlock):
-            graph: dict[str, set[str]] = {}
-            _collect_comb_deps(stmt.body, graph)
-            cycles = _find_cycles(graph)
-            for cycle in cycles:
-                errors.append(
-                    f"combinational loop detected: {' -> '.join(cycle)}"
-                )
-    return errors
+            _scan_comb_block(stmt.body, graph, {})
+        elif isinstance(stmt, AssignStmt):
+            # Continuous assignments: no prior-assignment context.
+            _add_comb_assignment(stmt, graph, {})
+    cycles = _find_cycles(graph)
+    return [
+        f"combinational loop detected: {' -> '.join(_fmt_node(n) for n in c)}"
+        for c in cycles
+    ]
 
 
-def _collect_comb_deps(block: BlockStmt, graph: dict[str, set[str]]):
-    """Recursively collect signal dependencies from statements in a block."""
+def _resolve_reads(refs, state: dict) -> set[tuple]:
+    """Resolve each reference to the element nodes it depends on."""
+    resolved: set[tuple] = set()
+    for r_name, r_spec in refs:
+        matched = False
+        for (w_name, w_spec), w_reads in state.items():
+            if w_name != r_name:
+                continue
+            if specs_overlap(r_spec, w_spec):
+                resolved |= w_reads
+                matched = True
+        if not matched:
+            resolved.add((r_name, r_spec))
+    return resolved
+
+
+def _add_comb_assignment(
+    stmt: AssignStmt,
+    graph: dict[tuple, set[tuple]],
+    state: dict,
+):
+    """Record one assignment in *state* and add its dependency edges.
+
+    *state* maps the storage each write targets — ``(name, index spec)`` —
+    to the element nodes its driver reads.  SSA-style resolution replaces
+    reads of storage written earlier in the same block with that
+    assignment's own sources, which is what makes ``y = 0; y = y + b;``
+    loop-free.
+    """
+    target = stmt.target.name
+    if target == "_":
+        return
+    target_spec = index_spec(stmt.target.indices)
+
+    resolved = _resolve_reads(refs_of_assign(stmt), state)
+
+    graph.setdefault((target, target_spec), set()).update(resolved)
+    state[(target, target_spec)] = resolved
+
+
+def _merge_branch_states(
+    state: dict,
+    branches: list[dict],
+    all_assign: bool,
+):
+    """Merge per-branch storage states after a conditional.
+
+    *branches* holds the final state of each branch (empty dict for a
+    missing else/default).  Storage written in every branch takes the
+    union of the branch drivers (a mux); storage written in only some
+    branches keeps a fallback edge to its previous driver.
+    """
+    all_keys = set()
+    for b in branches:
+        all_keys |= set(b)
+    for key in all_keys:
+        assigned = [b[key] for b in branches if key in b]
+        if len(assigned) == len(branches) and all_assign:
+            state[key] = set().union(*assigned)
+        else:
+            state[key] = set().union(*assigned, {key})
+
+
+def _scan_comb_block(
+    block: BlockStmt,
+    graph: dict[tuple, set[tuple]],
+    state: dict,
+):
+    """Walk statements of a CombBlock, maintaining the driver-read state."""
     for stmt in block.statements:
         if isinstance(stmt, AssignStmt):
-            target = stmt.target.name
-            if target == "_":
-                continue
-            reads: set[str] = set()
-            _collect_reads_expr(stmt.value, reads)
-            for idx in stmt.target.indices:
-                if isinstance(idx, tuple):
-                    _collect_reads_expr(idx[0], reads)
-                    _collect_reads_expr(idx[1], reads)
-                else:
-                    _collect_reads_expr(idx, reads)
-            reads.discard("_")
-            graph.setdefault(target, set()).update(reads)
+            _add_comb_assignment(stmt, graph, state)
         elif isinstance(stmt, IfStmt):
-            cond_reads: set[str] = set()
-            _collect_reads_expr(stmt.cond, cond_reads)
-            # The condition signals affect every assignment in branches,
-            # but for loop detection we care about data-flow through
-            # assignments, so we just recurse into bodies.
-            _collect_comb_deps(stmt.then_body, graph)
+            then_state = dict(state)
+            _scan_comb_block(stmt.then_body, graph, then_state)
+            else_state = dict(state)
             if stmt.else_body:
-                _collect_comb_deps(stmt.else_body, graph)
-        elif isinstance(stmt, ForStmt):
-            _collect_comb_deps(stmt.body, graph)
+                _scan_comb_block(stmt.else_body, graph, else_state)
+            _merge_branch_states(state, [then_state, else_state], all_assign=True)
         elif isinstance(stmt, CaseStmt):
-            for ci in stmt.items:
-                _collect_comb_deps(ci.body, graph)
+            branch_states = [dict(state) for _ in stmt.items]
+            has_default = any(not ci.patterns for ci in stmt.items)
+            for ci, bs in zip(stmt.items, branch_states):
+                _scan_comb_block(ci.body, graph, bs)
+            _merge_branch_states(state, branch_states, all_assign=has_default)
+        elif isinstance(stmt, ForStmt):
+            # The body may execute zero or more times: resolve reads
+            # against the pre-loop state, then union the results.
+            body_state = dict(state)
+            _scan_comb_block(stmt.body, graph, body_state)
+            for key, st in body_state.items():
+                state[key] = st | state.get(key, {key})
 
 
 def _collect_reads_expr(expr: Expr, reads: set[str]):
@@ -228,11 +319,11 @@ def _collect_reads_expr(expr: Expr, reads: set[str]):
         _collect_reads_expr(expr.inner, reads)
 
 
-def _find_cycles(graph: dict[str, set[str]]) -> list[list[str]]:
+def _find_cycles(graph: dict) -> list[list]:
     """Find all simple cycles in a directed graph using DFS.
 
-    Returns a list of cycles, where each cycle is a list of node names
-    forming the loop (first element repeated at the end).
+    Nodes are opaque hashables — here (signal, index spec) pairs.  Returns
+    a list of cycles, each a list of nodes forming the loop.
     Uses O(V+E) time per DFS tree traversal.
     """
     WHITE, GRAY, BLACK = 0, 1, 2
@@ -249,7 +340,7 @@ def _find_cycles(graph: dict[str, set[str]]) -> list[list[str]]:
     for node in all_nodes:
         color.setdefault(node, WHITE)
 
-    def dfs(u: str) -> None:
+    def dfs(u) -> None:
         color[u] = GRAY
         for v in graph.get(u, set()):
             if color.get(v, WHITE) == GRAY:
@@ -268,7 +359,7 @@ def _find_cycles(graph: dict[str, set[str]]) -> list[list[str]]:
                 dfs(v)
         color[u] = BLACK
 
-    for node in sorted(graph.keys()):
+    for node in sorted(graph.keys(), key=_fmt_node):
         if color[node] == WHITE:
             dfs(node)
 
@@ -308,4 +399,4 @@ def infer_port_directions(
 def _implicit_port_candidates(symbols: SymbolTable, drivers: DriverInfo) -> set[str]:
     """Determine implicit port candidates: referenced names not declared internally."""
     all_used = set(drivers.drivers) | drivers.readers
-    return all_used - symbols.params - symbols.signals - symbols.instances
+    return all_used - symbols.params - symbols.localparams - symbols.signals - symbols.instances

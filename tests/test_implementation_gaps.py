@@ -458,15 +458,20 @@ class TestMissingRequiredPort:
         sv = compile_source(src)
         assert "child" in sv["parent"]
 
-    def test_external_ip_not_checked(self):
-        """External IP modules (not in compilation) should not be checked."""
+    def test_external_ip_not_checked(self, tmp_path):
+        """External IP resolved via -ip skips the local required-port check."""
+        (tmp_path / "external_ip.sv").write_text(
+            "module external_ip (input logic a, input logic b, input logic c);\n"
+            "endmodule\n"
+        )
         src = (
             "module parent (x, y) { "
             "logic x; logic y; "
             "external_ip u1 { .a(x), .b(y) }; "
             "}"
         )
-        sv = compile_source(src)
+        # Unconnected input 'c' of the IP is not flagged (external module)
+        sv = compile_source(src, ip_dirs=[tmp_path])
         assert "parent" in sv
 
 
@@ -517,31 +522,41 @@ class TestForStepLimited:
         src = (
             "module m (y) { "
             "logic [7:0] y; "
-            "for (i = 0; i < 8; i++) { assign y = i; } "
+            "comb { for (i = 0; i < 8; i++) { y = i; } } "
             "}"
         )
         sv = compile_source(src)
         assert "m" in sv
+        assert "for (int i = 0; i < 8; i = i + 1)" in sv["m"]
 
     def test_compound_assignment_works(self):
         src = (
             "module m (y) { "
             "logic [7:0] y; "
-            "for (i = 0; i < 8; i += 1) { assign y = i; } "
+            "comb { for (i = 0; i < 8; i += 1) { y = i; } } "
             "}"
         )
         sv = compile_source(src)
         assert "m" in sv
+        assert "i = i + 1" in sv["m"]
 
     def test_simple_step_works(self):
         src = (
             "module m (y) { "
             "logic [7:0] y; "
-            "for (i = 0; i < 8; i = i + 1) { assign y = i; } "
+            "comb { for (i = 0; i < 8; i = i + 1) { y = i; } } "
             "}"
         )
         sv = compile_source(src)
         assert "m" in sv
+        assert "i = i + 1" in sv["m"]
+
+    def test_module_level_for_is_error(self):
+        """'for' outside a procedural block is rejected, not silently dropped."""
+        with pytest.raises(SlipSemanticError, match="'for' is not supported at module level"):
+            compile_source(
+                "module m (y) { logic [7:0] y; for (i = 0; i < 8; i++) { y = i; } }"
+            )
 
 
 # ── BUG-022 FIXED: Port width parser now supports [high:low] ────
@@ -605,9 +620,8 @@ class TestDuplicateDeclaration:
 # ── BUG-026: Instance module existence (external IP allowed) ───
 
 class TestInstanceModuleExistence:
-    """BUG-026: Non-regex instances don't validate that the target module
-    exists in the current compilation. External IP modules are allowed.
-    pyslang validates at codegen time."""
+    """BUG-026 FIXED: instance targets are validated against the compilation
+    unit and the IP index (-ip/-f); an unresolvable target is an error."""
 
     def test_typo_in_module_name(self):
         src = (
@@ -617,9 +631,19 @@ class TestInstanceModuleExistence:
             "child_typo u1 { .a(x) }; "
             "}"
         )
-        # External modules are allowed at semantic level
+        with pytest.raises(SlipSemanticError, match="cannot resolve target module 'child_typo'"):
+            compile_source(src)
+
+    def test_defined_module_ok(self):
+        src = (
+            "module child (a) { logic a; } "
+            "module parent (x) { "
+            "logic x; "
+            "child u1 { .a(x) }; "
+            "}"
+        )
         sv = compile_source(src)
-        assert "parent" in sv
+        assert "child u1" in sv["parent"]
 
 
 # ── BUG-029 FIXED: always_latch sensitivity list ────────────────
