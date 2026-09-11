@@ -147,25 +147,104 @@ register("bit_reverse", _bit_reverse)
 register("bit_select", _bit_select)
 
 
-# ── Pattern for function calls ────────────────────────────────────
-
-# Matches: $func_name(arg1, arg2, ...)
-_FUNC_PATTERN = re.compile(r'\$(\w+)\(([^)]*)\)')
+# ── Replacement evaluation ────────────────────────────────────────
 
 
-def _resolve_arg(arg: str, match: re.Match) -> str:
-    """Resolve a function argument.
+def _find_balanced_parens(text: str, open_idx: int) -> int:
+    """Return the index of the ')' matching the '(' at *open_idx*."""
+    depth = 0
+    for i in range(open_idx, len(text)):
+        if text[i] == "(":
+            depth += 1
+        elif text[i] == ")":
+            depth -= 1
+            if depth == 0:
+                return i
+    raise ValueError("unbalanced parentheses in regex replacement")
 
-    - ``\\N`` → captured group N from the regex match
-    - Otherwise → literal string
+
+def _resolve_piece(text: str, match: re.Match) -> str:
+    """Expand backreferences (``\\N``) and ``$func(...)`` calls in *text*.
+
+    The result is assembled piece by piece from the template; function
+    outputs are inserted verbatim and never re-expanded.
     """
-    # Check if it's a backreference like \1, \2, etc.
-    backref_match = re.match(r'^\\(\d+)$', arg.strip())
-    if backref_match:
-        group_num = int(backref_match.group(1))
-        return match.group(group_num)
+    out: list[str] = []
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if ch == "\\" and i + 1 < len(text) and text[i + 1].isdigit():
+            group_num = int(text[i + 1])
+            if group_num > match.re.groups:
+                raise ValueError(
+                    f"invalid backreference \\{group_num}: pattern has "
+                    f"{match.re.groups} group(s)"
+                )
+            out.append(match.group(group_num))
+            i += 2
+        elif ch == "$":
+            name_end = i + 1
+            while name_end < len(text) and (text[name_end].isalnum() or text[name_end] == "_"):
+                name_end += 1
+            func_name = text[i + 1:name_end]
+            if not func_name or name_end >= len(text) or text[name_end] != "(":
+                raise ValueError(f"malformed function call near '${func_name}'")
+            close_idx = _find_balanced_parens(text, name_end)
+            args_str = text[name_end + 1:close_idx]
+            out.append(_call_func(func_name, args_str, match))
+            i = close_idx + 1
+        else:
+            out.append(ch)
+            i += 1
+    return "".join(out)
 
-    return arg.strip()
+
+def _call_func(func_name: str, args_str: str, match: re.Match) -> str:
+    """Look up and call a registered function with resolved arguments."""
+    if func_name not in REGISTRY:
+        raise ValueError(f"unknown regex function: ${func_name}")
+    func = REGISTRY[func_name]
+
+    resolved_args: list[str] = []
+    if args_str.strip():
+        # Split on top-level commas only (nested $func(...) calls may
+        # themselves contain commas).
+        raw_args: list[str] = []
+        depth = 0
+        current: list[str] = []
+        for ch in args_str:
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+            if ch == "," and depth == 0:
+                raw_args.append("".join(current))
+                current = []
+            else:
+                current.append(ch)
+        raw_args.append("".join(current))
+
+        for raw in raw_args:
+            stripped = raw.strip()
+            # A pure backreference resolves to the captured group;
+            # anything else (including nested $func calls) is expanded
+            # as a replacement template against the same match.
+            backref = re.fullmatch(r"\\(\d+)", stripped)
+            if backref:
+                group_num = int(backref.group(1))
+                if group_num > match.re.groups:
+                    raise ValueError(
+                        f"invalid backreference \\{group_num}: pattern has "
+                        f"{match.re.groups} group(s)"
+                    )
+                resolved_args.append(match.group(group_num))
+            else:
+                resolved_args.append(_resolve_piece(stripped, match))
+
+    try:
+        return str(func(*resolved_args))
+    except Exception as e:
+        raise ValueError(f"error in ${func_name}: {e}") from e
 
 
 def evaluate_replacement(
@@ -175,8 +254,13 @@ def evaluate_replacement(
 ) -> str:
     """Evaluate a replacement string with function calls.
 
-    Processes ``$func(...)`` calls in the replacement string, resolving
-    backreferences (``\\1``, ``\\2``, etc.) and calling registered functions.
+    The replacement template is expanded exactly once against the
+    ``fullmatch`` of *port_regex* on *port_name*: backreferences
+    (``\\1``, ``\\2``, ...) resolve to captured groups and ``$func(...)``
+    calls are invoked with the resolved arguments.  Function outputs are
+    inserted verbatim (never re-expanded), and patterns that can also
+    match the empty string produce the expanded template itself rather
+    than a doubled substitution.
 
     Args:
         signal_regex: The replacement string (may contain ``$func(...)`` calls)
@@ -193,48 +277,8 @@ def evaluate_replacement(
     """
     match = re.fullmatch(port_regex, port_name)
     if not match:
-        # Fallback to simple substitution
-        return re.sub(port_regex, signal_regex, port_name)
-
-    # First, do a simple re.sub to resolve all \N backreferences
-    # This handles cases without function calls
-    if '$' not in signal_regex:
-        return re.sub(port_regex, signal_regex, port_name)
-
-    # Process function calls
-    result = signal_regex
-    while True:
-        m = _FUNC_PATTERN.search(result)
-        if not m:
-            break
-
-        func_name = m.group(1)
-        args_str = m.group(2)
-
-        if func_name not in REGISTRY:
-            raise ValueError(f"unknown regex function: ${func_name}")
-
-        func = REGISTRY[func_name]
-
-        # Parse arguments
-        if args_str.strip():
-            raw_args = [a.strip() for a in args_str.split(',')]
-            resolved_args = [_resolve_arg(a, match) for a in raw_args]
-        else:
-            resolved_args = []
-
-        # Call the function
-        try:
-            func_result = func(*resolved_args)
-        except Exception as e:
-            raise ValueError(f"error in ${func_name}: {e}") from e
-
-        # Replace the function call with the result
-        start, end = m.span()
-        result = result[:start] + func_result + result[end:]
-
-    # After all function calls are resolved, do final backreference substitution
-    # for any remaining \N patterns (shouldn't be any, but handle edge cases)
-    result = re.sub(port_regex, result, port_name)
-
-    return result
+        raise ValueError(
+            f"replacement evaluated without a match: '{port_regex}' "
+            f"does not fullmatch '{port_name}'"
+        )
+    return _resolve_piece(signal_regex, match)

@@ -1,4 +1,13 @@
-"""Compile-time evaluator for defun function bodies."""
+"""Compile-time evaluator for defun function bodies.
+
+Function bodies are Python expressions evaluated with ``eval`` in a
+sandboxed environment: no builtins are exposed beyond an explicit
+allowlist matching the documented feature set, method calls are
+restricted to a safe string-method allowlist, and free function calls
+must be either built-in helpers or previously registered defun/regex
+functions.  Compiling an untrusted .slip file therefore cannot reach
+the interpreter, the filesystem, or module imports.
+"""
 
 from __future__ import annotations
 
@@ -19,7 +28,28 @@ from slip.ast.expressions import (
 )
 from slip.ast.statements import FuncDef, ReturnStmt, Statement
 from slip.errors.semantic import SlipSemanticError
-from slip.semantic.regex_funcs import register
+from slip.semantic.regex_funcs import REGISTRY, register
+
+# Builtins exposed to defun bodies. Everything else (open, eval, exec,
+# __import__, getattr, ...) is unavailable.
+_SAFE_BUILTINS: dict[str, Any] = {
+    "len": len,
+    "int": int,
+    "str": str,
+    "min": min,
+    "max": max,
+    "abs": abs,
+}
+
+# String methods callable on defun arguments/results.
+_SAFE_METHODS = frozenset({
+    "upper", "lower", "reverse", "replace", "strip", "lstrip", "rstrip",
+    "split", "rsplit", "splitlines", "startswith", "endswith",
+    "find", "rfind", "index", "count", "join", "zfill", "rjust", "ljust",
+    "title", "capitalize", "swapcase", "casefold",
+    "isdigit", "isalpha", "isalnum", "isnumeric", "islower", "isupper",
+    "removeprefix", "removesuffix",
+})
 
 
 class SlipStr(str):
@@ -62,9 +92,12 @@ def register_funcdef(funcdef: FuncDef) -> None:
         # Convert arguments: wrap strings in SlipStr, try int conversion
         converted_args = [_convert_arg(a) for a in args]
         env: dict[str, Any] = dict(zip(param_names, converted_args))
-        env["SlipStr"] = SlipStr  # Make SlipStr available in eval
+        # Sandboxed globals: empty __builtins__ plus the explicit allowlist.
+        sandbox_globals: dict[str, Any] = {"__builtins__": {}}
+        sandbox_globals.update(_SAFE_BUILTINS)
+        sandbox_globals["SlipStr"] = SlipStr
         try:
-            result = eval(py_code, {"__builtins__": __builtins__}, env)
+            result = eval(py_code, sandbox_globals, env)
             return str(result)
         except Exception as e:
             raise SlipSemanticError(
@@ -123,11 +156,24 @@ def _expr_to_python(expr: Expr) -> str:
         return f"({true_expr} if {cond} else {false_expr})"
 
     if isinstance(expr, MethodCallExpr):
+        if expr.method not in _SAFE_METHODS:
+            raise SlipSemanticError(
+                expr.loc.file, expr.loc.line, expr.loc.col,
+                f"method '.{expr.method}()' is not allowed in defun bodies "
+                f"(allowed: {', '.join(sorted(_SAFE_METHODS))})"
+            )
         obj = _expr_to_python(expr.obj)
         args = ", ".join(_expr_to_python(a) for a in expr.args)
         return f"({obj}.{expr.method}({args}))"
 
     if isinstance(expr, CallExpr):
+        if expr.func not in _SAFE_BUILTINS and expr.func not in REGISTRY:
+            raise SlipSemanticError(
+                expr.loc.file, expr.loc.line, expr.loc.col,
+                f"function '{expr.func}()' is not defined; defun bodies may "
+                f"call built-in helpers (len, int, str, min, max, abs) or "
+                f"registered defun/regex functions"
+            )
         args = ", ".join(_expr_to_python(a) for a in expr.args)
         return f"{expr.func}({args})"
 

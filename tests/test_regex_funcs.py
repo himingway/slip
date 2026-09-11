@@ -104,11 +104,10 @@ class TestEvaluateReplacement:
         result = evaluate_replacement(r"bus_\1", "data_in", "data_(.*)")
         assert result == "bus_in"
 
-    def test_no_match_fallback(self):
-        """When port_regex doesn't match, fallback to re.sub."""
-        result = evaluate_replacement(r"bus_\1", "other_port", "data_(.*)")
-        # When regex doesn't match, re.sub returns original string
-        assert result == "other_port"
+    def test_no_match_raises(self):
+        """Evaluating a replacement without a match is a hard error."""
+        with pytest.raises(ValueError, match="does not fullmatch"):
+            evaluate_replacement(r"bus_\1", "other_port", "data_(.*)")
 
 
 # ────────────────────────────────────────────────────────────────
