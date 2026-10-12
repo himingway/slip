@@ -33,6 +33,20 @@
       }
     },
     {
+      "name": "thread-sanitize",
+      "displayName": "Compiler with ThreadSanitizer",
+      "binaryDir": "${sourceDir}/build/thread-sanitize",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "SLIP_SANITIZERS": false,
+        "SLIP_THREAD_SANITIZER": true,
+        "CMAKE_EXPORT_COMPILE_COMMANDS": true,
+        "SLIP_COVERAGE": false,
+        "SLIP_FUZZING": false,
+        "SLIP_LIBFUZZER": false
+      }
+    },
+    {
       "name": "coverage",
       "binaryDir": "${sourceDir}/build/coverage",
       "cacheVariables": {
@@ -67,6 +81,10 @@
       "configurePreset": "sanitize"
     },
     {
+      "name": "thread-sanitize",
+      "configurePreset": "thread-sanitize"
+    },
+    {
       "name": "coverage",
       "configurePreset": "coverage"
     },
@@ -86,6 +104,13 @@
     {
       "name": "sanitize",
       "configurePreset": "sanitize",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "thread-sanitize",
+      "configurePreset": "thread-sanitize",
       "output": {
         "outputOnFailure": true
       }

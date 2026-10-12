@@ -1,6 +1,7 @@
 #include "../test_support.hpp"
 #include <future>
 #include <limits>
+#include <tuple>
 
 namespace {
 const std::string maximum = "int(\"9223372036854775807\")";
@@ -76,12 +77,38 @@ TEST_CASE(defun_replace_join_concat_string_limits) {
     test::rejected(test::function_source("concat(s.ljust(600000,\"a\"),s.ljust(600000,\"b\"))"), "E_LIMIT");
     test::rejected(test::function_source("s.ljust(600000,\"a\").join(\"a_b_c\".split(\"_\"))"), "E_LIMIT");
 }
+TEST_CASE(defun_replace_empty_needle_and_zero_count) {
+    test::function_value("\"abc\".replace(\"\", \"-\", 2)", "\"-a-bc\"");
+    test::function_value("\"abc\".replace(\"\", \"-\")", "\"-a-b-c-\"");
+    test::function_value("\"banana\".replace(\"a\", \"x\", 0)", "\"banana\"");
+}
+TEST_CASE(defun_split_rsplit_limits_and_whitespace) {
+    test::function_value("\"|\".join(\"a::b::c\".rsplit(\"::\", 1))", "\"a::b|c\"");
+    test::function_value("\"|\".join(\"  a  b  \".split())", "\"a|b\"");
+    test::function_value("\"|\".join(\"a::b::c\".split(\"::\", 1))", "\"a|b::c\"");
+}
+TEST_CASE(defun_splitlines_keepends_and_negative_slice) {
+    test::function_value("\"|\".join(\"a\\r\\nb\\n\".splitlines(1))", "\"a\\r\\n|b\\n\"");
+    test::function_value("\"abcdef\"[-4:-1]", "\"cde\"");
+}
+TEST_CASE(defun_string_search_bounds_and_signed_zero_fill) {
+    test::function_value("\"banana\".find(\"na\", -3)", "4");
+    test::function_value("\"banana\".count(\"\")", "7");
+    test::function_value("\"-42\".zfill(5)", "\"-0042\"");
+}
 TEST_CASE(meta_iteration_limit_accepts_exact_boundary) {
     slip::Options options; options.max_meta_iterations = 3;
     const auto source = "module m { `for (`i=0;`i<3;`i=`i+1) { logic q_`i; } }";
     CHECK(slip::compile(source, "limit.slip", options).modules.size() == 1);
     options.max_meta_iterations = 2;
     test::rejected(source, "E_LIMIT", "iteration", options);
+}
+TEST_CASE(meta_zero_iteration_and_descending_range) {
+    const auto zero = test::module("module m { `for (`i=3;`i<3;`i=`i+1) { logic never_`i; } logic kept; }");
+    CHECK(zero.find("never_") == std::string::npos);
+    CHECK(zero.find("kept") != std::string::npos);
+    const auto descending = test::module("module m { `for (`i=2;`i>=0;`i=`i-1) { logic bit_`i; } }");
+    for (const auto* name : {"bit_2", "bit_1", "bit_0"}) test::contains(descending, name);
 }
 TEST_CASE(meta_iteration_limit_counts_nested_and_sibling_loops) {
     slip::Options options; options.max_meta_iterations = 5;
@@ -154,6 +181,29 @@ TEST_CASE(compilation_result_survives_ip_files_and_options_destruction) {
     test::Directory output;
     slip::write_outputs(result, output.path());
     CHECK(std::filesystem::file_size(output.path()/"m.sv") > 0);
+}
+TEST_CASE(ip_type_parameters_and_interface_ports_are_rejected_explicitly) {
+    for (const auto& [name, source, message] : std::vector<std::tuple<std::string, std::string, std::string>>{
+             {"typed", "module typed #(parameter type T=logic)(input T a); endmodule", "type parameters"},
+             {"interface", "interface bus_if; logic a; modport mp(input a); endinterface module ext(bus_if.mp bus); endmodule", "unsupported interface port"}}) {
+        test::Directory directory;
+        const auto file = directory.write("unit.sv", source);
+        slip::Options options; options.ip_dirs = {directory.path()};
+        auto error = test::error([&] { slip::compile("module top {}", "top.slip", options); }, "E_IP", message);
+        CHECK(error.location.file == file.string());
+    }
+}
+TEST_CASE(filelist_cycles_and_missing_sources_have_io_diagnostics) {
+    test::Directory directory;
+    const auto root = directory.write("root.f", "-f nested/child.f\n");
+    directory.write("nested/child.f", "-f ../root.f\n");
+    slip::Options options; options.filelists = {root};
+    test::error([&] { slip::compile("module top {}", "top.slip", options); }, "E_FILELIST", "circular");
+
+    const auto missing_list = directory.write("missing.f", "missing.sv\n");
+    options.filelists = {missing_list};
+    auto error = test::error([&] { slip::compile("module top {}", "top.slip", options); }, "E_IO", "regular file");
+    CHECK(error.location.file.find("missing.sv") != std::string::npos);
 }
 TEST_CASE(concurrent_compilers_isolate_functions_ip_and_constant_caches) {
     test::Directory directory;

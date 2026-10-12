@@ -41,6 +41,12 @@ TEST_CASE(parameter_defaults_depend_on_overridden_parameter) {
     const auto sv = test::module("module leaf #(param W=8,param N=W+2)(a,y) { logic [N-1:0] a; logic [N-1:0] y; assign y=a; } module m(a,y) { leaf #(.W(14)) u {.a,.y}; }");
     test::contains(sv, "output logic [15:0] y");
 }
+TEST_CASE(parameter_overrides_resolve_forward_references_in_any_order) {
+    const auto sv = test::module("module leaf #(param W=8,param N=W+2)(a,y) { logic [N-1:0] a; logic [N-1:0] y; assign y=a; } module m #(param BASE=12)(a,y) { leaf #(.N(BASE+1),.W(BASE)) u {.a,.y}; }");
+    test::contains(sv, "output logic [(BASE + 1) - 1:0] y");
+    test::contains(sv, ".N(BASE + 1),");
+    test::contains(sv, ".W(BASE)");
+}
 TEST_CASE(localparam_width_resolves_in_parent) {
     const auto sv = test::module("module leaf #(param W=8)(a,y) { localparam N=W+1; logic [N-1:0] a; logic [N-1:0] y; assign y=a; } module m(a,y) { leaf #(.W(15)) u {.a,.y}; }");
     test::contains(sv, "input logic [15:0] a");
@@ -67,6 +73,13 @@ TEST_CASE(disjoint_partial_drivers_are_allowed) {
 TEST_CASE(array_element_drivers_are_distinct) {
     test::module("module m(a,y) { logic [7:0] a; logic [7:0] y; logic [7:0] data[0:1]; assign data[0]=a; assign data[1]=~a; assign y=data[0]^data[1]; }");
     test::rejected("module m(a,y) { logic [7:0] a; logic [7:0] y; logic [7:0] data[0:1]; assign data[0]=a; assign data[0]=~a; assign y=data[0]; }", "E_MULTIPLE_DRIVERS");
+}
+TEST_CASE(unpacked_element_packed_slices_have_precise_driver_overlap) {
+    test::module("module m(a,b,y) { logic [3:0] a; logic [3:0] b; logic [7:0] y; logic [7:0] data[0:1]; assign data[0][3:0]=a; assign data[0][7:4]=b; assign y=data[0]; }");
+    test::rejected("module m(a,b,y) { logic [3:0] a; logic [3:0] b; logic [7:0] y; logic [7:0] data[0:1]; assign data[0][3:0]=a; assign data[0][2:1]=b; assign y=data[0]; }", "E_MULTIPLE_DRIVERS", "data");
+}
+TEST_CASE(feedback_through_distinct_unpacked_elements_is_detected) {
+    test::rejected("module m(y) { logic [7:0] y; logic [7:0] data[0:1]; assign data[0][0]=data[1][0]; assign data[1][0]=data[0][0]; assign y=data[0][0]; }", "E_COMB_LOOP", "data");
 }
 TEST_CASE(dynamic_index_driver_conflicts_conservatively) {
     test::rejected("module m(a,i,y) { logic a; logic [1:0] i; logic [3:0] y; assign y[i]=a; assign y[0]=~a; }", "E_MULTIPLE_DRIVERS");

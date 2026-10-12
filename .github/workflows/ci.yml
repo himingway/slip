@@ -42,6 +42,16 @@ jobs:
             build/coverage/coverage/
             build/coverage/Testing/Temporary/LastTest.log
 
+  thread-sanitizer:
+    name: GCC ThreadSanitizer concurrency regression
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y cmake libpcre2-dev
+      - run: cmake --preset thread-sanitize
+      - run: cmake --build --preset thread-sanitize --parallel 2
+      - run: ctest --preset thread-sanitize -R concurrent_compilers
+
   fuzz:
     name: Clang ASan / UBSan / libFuzzer
     runs-on: ubuntu-24.04

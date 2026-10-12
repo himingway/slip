@@ -13,6 +13,12 @@ TEST_CASE(parse_error_has_exact_source_location) {
     CHECK(error.location.column == 16);
     test::contains(error.message, "unexpected token");
 }
+TEST_CASE(crlf_source_keeps_line_and_column_locations) {
+    const auto source = "module m {\r\n    assign y = ;\r\n}";
+    auto error = test::rejected(source, "E_PARSE");
+    CHECK(error.location.line == 2);
+    CHECK(error.location.column == 16);
+}
 TEST_CASE(duplicate_declaration_reports_second_declaration) {
     auto error = test::rejected("module m {\n    logic a;\n    logic a;\n}", "E_DUPLICATE", "a");
     CHECK(error.location.line == 3);

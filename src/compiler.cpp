@@ -543,7 +543,7 @@ std::vector<InterfacePort> instantiate(const Instance& instance, const Interface
     for (auto& [name, value] : defaults) { (void)value; resolve(name); }
     auto simplify = [&](const std::string& dimension) {
         std::string text = substitute_sv(dimension, resolved), result;
-        std::regex range(R"(\[([^\[\]]+):([^\[\]]+)\])"); std::size_t prior = 0;
+        static const std::regex range(R"(\[([^\[\]]+):([^\[\]]+)\])"); std::size_t prior = 0;
         for (auto it = std::sregex_iterator(text.begin(), text.end(), range); it != std::sregex_iterator(); ++it) {
             auto& match = *it; result += text.substr(prior, match.position() - prior);
             try { result += "[" + std::to_string(backend.constant(match[1].str(), {}, loc)) + ":" + std::to_string(backend.constant(match[2].str(), {}, loc)) + "]"; }
@@ -749,7 +749,17 @@ Result compile(std::string_view source, std::string filename, const Options& opt
 }
 Result compile_file(const std::filesystem::path& file, const Options& options) { return compile(read_file(file), file.string(), options); }
 void write_outputs(const Result& result, const std::filesystem::path& directory) {
-    std::filesystem::create_directories(directory);
+    std::error_code error;
+    std::filesystem::create_directories(directory, error);
+    if (error) throw Error({directory.string()}, "E_IO", "cannot create output directory: " + error.message());
+    for (const auto& [name, source] : result.modules) {
+        (void)source;
+        auto file = directory / (name + ".sv");
+        auto state = std::filesystem::status(file, error);
+        if (error == std::errc::no_such_file_or_directory) error.clear();
+        if (error) throw Error({file.string()}, "E_IO", "cannot inspect output path: " + error.message());
+        if (std::filesystem::is_directory(state)) throw Error({file.string()}, "E_IO", "output path is a directory");
+    }
     for (auto& [name, source] : result.modules) {
         auto file = directory / (name + ".sv");
         std::ofstream output(file, std::ios::binary | std::ios::trunc);

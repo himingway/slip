@@ -68,7 +68,7 @@ std::string packed_dimensions(const slang::syntax::DataTypeSyntax* type) {
     if (!type) return {};
     std::string result;
     std::string text = type->toString();
-    std::regex brackets(R"(\[[^\]]*\])");
+    static const std::regex brackets(R"(\[[^\]]*\])");
     for (auto it = std::sregex_iterator(text.begin(), text.end(), brackets); it != std::sregex_iterator(); ++it) result += it->str();
     return result;
 }

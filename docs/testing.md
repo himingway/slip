@@ -5,14 +5,14 @@ oracle; matching its output does not replace independent behavior checks.
 
 ## Regression tests
 
-`tests/regression/` contains 70 individually named CTest cases:
+`tests/regression/` contains 81 individually named CTest cases:
 
 | File | Independent expectations |
 |---|---|
 | `frontend.cpp` | AST structure for precedence, associativity, selects, casts and malformed expressions |
-| `semantic.cpp` | Signed widths, caller parameter scope, frozen local parameters, overlapping drivers and feedback |
-| `diagnostics.cpp` | Error codes, filenames, exact lines/columns and nested include context |
-| `runtime.cpp` | Signed 64-bit arithmetic, resource boundaries, ownership and compilation isolation |
+| `semantic.cpp` | Signed widths, parameter resolution, packed/unpacked select overlap, drivers and feedback |
+| `diagnostics.cpp` | Error codes, filenames, exact lines/columns, CRLF input and nested include context |
+| `runtime.cpp` | Integer/resource bounds, string methods, include/filelist/IP errors, ownership and compilation isolation |
 
 Runtime checks include valid and overflowing boundary arithmetic, division and
 remainder, recursion and string expansion, cumulative metaprogram work, source
@@ -30,11 +30,15 @@ ctest --preset release -R compiler.regression
 cmake --preset sanitize
 cmake --build --preset sanitize --parallel 2
 ctest --preset sanitize
+
+cmake --preset thread-sanitize
+cmake --build --preset thread-sanitize --parallel 2
+ctest --preset thread-sanitize -R concurrent_compilers
 ```
 
-With Verilator installed, the release/sanitize suite has 96 CTest entries.
+With Verilator installed, the release/sanitize suite has 107 CTest entries.
 ASan/UBSan check address safety and undefined behavior; they do not detect data
-races. Concurrent isolation assertions are not a replacement for ThreadSanitizer.
+races. The ThreadSanitizer preset runs the concurrent compilation regression.
 In sandboxes where LeakSanitizer cannot inspect processes, use
 `ASAN_OPTIONS=detect_leaks=0`; this leaves ASan and UBSan enabled.
 
@@ -63,7 +67,7 @@ ctest --preset coverage --parallel 2
 cmake --build --preset coverage --target coverage_report
 ```
 
-The coverage preset also runs deterministic mutation fuzzing (97 CTest entries
+The coverage preset also runs deterministic mutation fuzzing (108 CTest entries
 with Verilator). `build/coverage/coverage/report.md` gives per-file and total line
 and branch coverage; `summary.json` provides counts for automation. Compressed
 gcov JSON contains individual uncovered lines and branches. Only the six
@@ -73,12 +77,11 @@ branch totals exclude gcov's exception-only arcs but include other
 compiler-generated arcs. These numbers measure executed code, not correctness
 or equivalence. No arbitrary percentage is treated as proof of completeness.
 
-The initial native-only measurement on 2026-10-12 with GCC 16.2 and all 97
-coverage-preset tests passing was **1,552/1,776 lines (87.38%)** and
-**3,870/5,996 branches (64.54%)**. The largest line-coverage gaps were
-`functions.cpp` (68.58%) and `slang_backend.cpp` (75.32%), making string-method
-variants and external SV interface diagnostics useful next targets. This is a
-baseline, not a gate: compiler versions and generated branch arcs affect counts.
+The native-only measurement on 2026-10-12 with GCC 16.2 and all 108
+coverage-preset tests passing was **1,646/1,785 lines (92.21%)** and
+**4,146/6,048 branches (68.55%)**. The largest line-coverage gaps were
+`functions.cpp` (80.89%) and `main.cpp` (90.16%). This is a measurement, not a
+gate: compiler versions and generated branch arcs affect counts.
 
 For a fresh measurement, remove previous `.gcda` files before running tests:
 
