@@ -12,7 +12,7 @@
 
 Slip 是一种简洁的硬件描述语言，本质上是 SystemVerilog 的语法糖。它为常见的硬件设计模式提供了精简的语法——信号声明、组合与时序逻辑、带有正则端口映射的模块实例化、编译时元编程——同时生成干净、可读的 SystemVerilog 输出。
 
-每个 Slip 构造都直接映射到对应的 SystemVerilog 等价形式。生成的输出通过 [pyslang](https://github.com/MikePopoloski/slang)（[slang](https://github.com/MikePopoloski/slang) 编译器的 Python 绑定）按照 IEEE 1800-2017 标准进行验证。
+Slip 的主实现是 C++20 编译器，直接链接 [slang](https://github.com/MikePopoloski/slang) 完成常量求值、IP 反射及完整设计校验。Python 仅保留为 [reference](reference/python/README.md)，不参与主程序运行。架构与兼容边界见 [开发说明](docs/development.md)。
 
 ## 特性
 
@@ -26,16 +26,16 @@ Slip 是一种简洁的硬件描述语言，本质上是 SystemVerilog 的语法
 - **case 语句** — 支持 `case`/`casez`/`casex`，多模式、default 和 `?` 通配符
 - **inside 运算符** — `x inside {1, 2, 3}` 集合成员测试
 - **复合赋值** — `+=`、`-=`、`*=`、`/=`、`%=`、`&=`、`|=`、`^=`、`<<=`、`>>=`、`<<<=`、`>>>=` 在解析时脱糖
-- **编译时元编程** — `` `for `` 循环和 `` `if `` 条件编译，支持常量折叠
+- **编译时元编程** — `` `for `` 循环和 `` `if `` 条件编译，采用 SystemVerilog 常量求值
 - **模板标识符** — `` `for `` 循环变量可在标识符名称中展开（如 `data_`i` → `data_0`）
 - **模块实例化** — 简洁语法，支持同名简写（`.clk`）、显式连接和正则端口映射
 - **Include 指令** — `include "helpers.slip"` 引入其他 Slip 文件中的 `defun` 函数和模块，支持递归和循环检测
-- **IP 集成** — 通过 pyslang 自动反射外部 SystemVerilog IP 的端口和参数，支持 VCS filelist（`-f`）和递归目录扫描
+- **IP 集成** — 通过 slang 自动反射外部 SystemVerilog IP 的端口和参数，支持 VCS filelist（`-f`）和递归目录扫描
 - **参数与局部参数** — 模块级 `param` 可覆盖，模块体内 `localparam` 不可覆盖
 - **多驱动检测** — 信号被多个 `seq`/`comb` 块驱动时报错
 - **组合逻辑环路检测** — `comb` 块内的反馈环路会被检测并报错
 - **位宽不匹配警告** — 赋值和实例端口位宽不匹配时发出警告
-- **模块拓扑排序** — 按依赖顺序输出模块；循环依赖报编译错误
+- **模块拓扑排序** — 按依赖顺序解析接口；循环依赖报编译错误
 - **常量校验** — 端口连接中禁止裸整数，必须使用宽度前缀（`1'b0`）或填充常量（`'0`、`'1`）
 - **悬空端口标记** — `.rst_n(_)` 将端口标记为有意不连接
 
@@ -79,6 +79,10 @@ module pipeline #(
     input logic [WIDTH - 1:0] din,
     output logic [WIDTH - 1:0] dout
 );
+
+    if (STAGES !== (3)) begin : __slip_frozen_STAGES
+        $error("STAGES controls Slip compile-time expansion and cannot be overridden");
+    end
 
     logic [WIDTH - 1:0] stage [0:STAGES - 1];
 
@@ -250,17 +254,6 @@ child u7 { .clk, "a_(.*)" => "pre_$upper(\1)_post" };   // 前缀 + 后缀
 - 算术：`$add`、`$sub`、`$mul`、`$div`、`$mod`
 - 位操作：`$bit_reverse`、`$bit_select`
 
-**自定义函数（Python API）：**
-```python
-from slip.semantic.regex_funcs import register
-
-def my_func(s: str) -> str:
-    return f"prefix_{s}"
-
-register("my_func", my_func)
-```
-然后在 Slip 中使用 `$my_func(\1)`。自定义函数可以覆盖内置函数。
-
 **原生自定义函数（defun）：**
 ```slip
 defun prefix(s):
@@ -279,7 +272,7 @@ child u1 {
     "ch_(.*)" => "$inc(\1)"
 };
 ```
-支持完整 Python 表达式，包括：字符串拼接（`+`）、字符串方法（`.upper()`、`.lower()`、`.reverse()`、`.replace()`、`.strip()`、`.split()`、`.startswith()` 等）、算术运算（`+`、`-`、`*`、`/`、`%`）、方法链式调用、内置函数（`len()`、`int()`、`str()`）、索引切片（`s[0]`、`s[1:3]`、`s[3:]`、`s[:3]`、`s[-1]`）、三元表达式。
+`defun` 使用受限的 Python 风格表达式，由 C++ 解释器求值。支持：字符串拼接（`+`）、字符串方法（`.upper()`、`.lower()`、`.reverse()`、`.replace()`、`.strip()`、`.split()`、`.startswith()` 等）、算术运算（`+`、`-`、`*`、`/`、`%`）、方法链式调用、内置函数（`len()`、`int()`、`str()`）、索引切片（`s[0]`、`s[1:3]`、`s[3:]`、`s[:3]`、`s[-1]`）、三元表达式。
 
 ### 特殊常量
 
@@ -291,19 +284,30 @@ child u1 {
 
 ## 安装
 
+### 原生 C++ 编译器
+
+需要 C++20 编译器、CMake >= 3.24 和 PCRE2 开发库。CMake 优先使用安装好的 slang 10，否则下载固定版本及其依赖。构建 slang 时需要 Python；运行 Slip 不需要 Python 或 pyslang。
+
 ```bash
-# 克隆
-git clone https://github.com/himingway/slip.git
-cd slip
-
-# 安装依赖（需要 uv）
-uv sync
-
-# 或使用 pip
-pip install -e .
+cmake --preset release
+cmake --build --preset release --parallel 2
+ctest --preset release
+build/release/slip check tests/fixtures/simple.slip
 ```
 
-需要 Python >= 3.10。
+原生版本增加 stdin 输入（`-`）、`build --stdout` 和 `--diagnostics=json`。每次编译独立保存状态，支持并发调用；循环、表达式和正则匹配设有资源限制。过程循环变量不会被导出为隐式输入端口。
+
+离线构建、Sanitizer 检查、迁移测试及整数/字符串的兼容边界见 [docs/development.md](docs/development.md)。
+
+安装命令行工具：
+
+```sh
+cmake --install build/release --prefix "$HOME/.local"
+```
+
+确保 `$HOME/.local/bin` 在 `PATH` 中，之后 `slip` 即为 C++ 主程序。
+
+Python 对照实现的安装和测试方法见 [reference/python/README.md](reference/python/README.md)。
 
 ## 使用方法
 
@@ -320,10 +324,20 @@ slip build -f ip.f -ip ip_dir design.slip # filelist + 目录（组合使用）
 ### 检查
 
 ```bash
-slip check design.slip                    # 仅验证，不生成输出
+slip check design.slip                    # 运行完整编译校验，不写出文件
+slip check --strict design.slip           # 要求显式声明，位宽不匹配时报错
 slip check -ip ip_dir design.slip         # 含 IP 目录
 slip check -f ip.f design.slip            # 含 filelist
 ```
+
+### 编译正确性与严格模式
+
+- 所有生成模块与外部 IP 一起交给 slang 展开、校验；反射与校验共用解析后的 IP、宏定义和 include 路径。错误端口名、参数名和未解析标识符会报错。
+- 所有模块校验成功后才写出文件。编译错误不会覆盖旧产物或留下部分新产物。
+- 接口信息按依赖顺序跨多层封装传播；参数化维度会结合实例参数覆盖和 localparam 依赖转换到父模块作用域。
+- 电路表达式保留字面量位宽、符号、四态值与赋值上下文。循环展开只替换循环变量，不使用 Python 运算改写电路表达式。
+- 直接或间接参与 Slip 元编程控制的参数，在生成模块中固定为默认值。Slip 内禁止覆盖；生成的 SV 也会在展开时拒绝不同的覆盖值。需要改变这些参数时，应修改源配置后重新生成。只参与普通 RTL 维度的参数仍可覆盖。
+- 推荐在 CI 使用 `--strict`：要求显式声明信号和端口，并将赋值、端口位宽不匹配视为错误。默认模式仍支持带注释的隐式信号；显式单比特声明始终有效。
 
 ### Filelist 格式
 
@@ -365,20 +379,23 @@ Slip 支持 VCS 格式的 filelist（`.f`）文件：
                                        SystemVerilog (.sv)
 ```
 
-1. **词法分析** — 基于正则的词法分析器，带后处理合并
+主实现位于 `src/` 和 `include/slip/`；C++ 测试及共享 HDL 用例位于 `tests/`；Python 对照实现独立放在 `reference/python/`。
+
+1. **词法分析** — 识别 token、复合运算符、注释与模板标识符
 2. **语法分析** — 语句使用递归下降，表达式使用 Pratt 解析器
 3. **语义分析** — Include 解析、元编程展开、符号收集、驱动分析、组合逻辑环路检测、赋值修正、位宽不匹配检查、IR 构建、实例解析与端口位宽推断
-4. **代码生成** — IR 转换为 SystemVerilog，通过 pyslang 验证，附带 review 注释（`// implicit`、`// no width`、`// width from X.Y`）
+4. **代码生成** — IR 转换为 SystemVerilog，通过 slang 验证，附带 review 注释（`// implicit`、`// no width`、`// width from X.Y`）
 
 ## 运行测试
 
-```bash
-# 运行所有测试
-uv run pytest tests/ -v
-
-# 带覆盖率
-uv run pytest tests/ --cov=slip --cov-report=term-missing
+```sh
+ctest --preset release
+cmake --preset sanitize
+cmake --build --preset sanitize --parallel 2
+ctest --preset sanitize
 ```
+
+安装 Verilator 后，CTest 会加入与独立参考 RTL 比较的 128 周期仿真。Python 回归和迁移对照测试单独运行，见 [reference](reference/python/README.md)。
 
 ## 许可证
 

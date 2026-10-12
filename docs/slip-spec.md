@@ -1,9 +1,9 @@
 # Slip 语言规范
 
 **全称**：Streamlined Language for IC Prototyping
-**状态**：正式发布
+**状态**：C++ 主实现
 **面向读者**：Slip 语言用户与编译器开发者
-**最后更新**：2026-05-12
+**最后更新**：2026-10-12
 
 ---
 
@@ -14,75 +14,48 @@ Slip 是一个极简硬件描述语言 (DSL) 编译器。它定义了一组高�
 ### 1.1 设计目标
 
 *   **极简源语言**：通过上下文自动推导端口方向、信号类型、实例化连线，只保留硬件本质描述。
-*   **严谨代码生成**：采用"片段解析 + SyntaxRewriter"模式，通过 `pyslang` 构建语法树，确保输出代码语法与语义正确。
+*   **严谨代码生成**：从 IR 生成可读的 SystemVerilog 文本，再与外部 IP 一起通过 `slang::ast::Compilation` 校验。全部模块校验成功后才写出文件。
 *   **可靠的元编程**：提供编译期 `` `for `` / `` `if `` 展开，循环变量可在体内参与任意常量表达式运算，展开时自动进行常量折叠。
 *   **IP 自动集成**：利用 `slang` 反射外部模块的参数、`localparam` 和端口信息，支持正则批量端口映射、位宽自动推导、悬空标记和智能 tie 常数。
 *   **清晰边界**：不涉及仿真脚本、综合脚本或 FPGA 项目文件生成。
 
 ### 1.2 技术选型
 
-*   实现语言：Python 3.10+
-*   词法分析：基于正则表达式的 Token 生成器，含后处理合并（复合运算符、模板标识符）
-*   语法分析：手写递归下降解析器 + Pratt 表达式解析器
-*   中间表示：自定义 Python 数据类
-*   代码生成：`pyslang` 片段解析 + `SyntaxRewriter` 组合语法树
-*   外部 Verilog 处理：`pyslang` 编译、反射、诊断
-*   CLI 框架：`click`
+* 实现语言：C++20。
+* 词法和语法分析：手写词法分析器、递归下降语句解析器、Pratt 表达式解析器。
+* AST：`std::variant` 节点；表达式使用 `std::shared_ptr<const Expr>`。
+* IR：具有值所有权的模块、信号、过程和实例容器。
+* SV 集成：直接链接 slang 10，完成常量求值、IP 反射和完整设计校验。
+* 正则映射：PCRE2；`defun` 由受限的 C++ 类型解释器执行。
+* 构建和测试：CMake、CTest；硬件行为测试使用 Verilator。
+
+Python 实现位于 `reference/python/`，只用于回归和迁移对照。构建说明和兼容边界见 [development.md](development.md)。
 
 ---
 
 ## 2. 系统架构
 
-编译器采用经典三阶段流水线。
+```text
+.slip → 词法/语法分析 → AST → include 合并和元编程展开
+      → 依赖排序、符号/驱动/接口解析 → IR → SV 生成
+      → 与外部 IP 一起通过 slang 完整设计校验 → 写出文件
+```
 
-```
-源文件 (.slip)
-      │
-      ▼
-[词法分析器] → Token 流（含模板标识符合并）
-      │
-      ▼
-[递归下降语法分析器 + Pratt 表达式解析器] → 自定义 AST (带源码位置)
-      │
-      ▼
-[语义分析 & IR 构建]
-  ├─ Include 解析（递归合并 funcdef 和模块）
-  ├─ 元编程展开（循环变量运算与常量折叠）
-  ├─ 隐式端口/信号推导
-  ├─ 驱动分析（剔除内部自驱动）
-  ├─ 多驱动检测
-  ├─ 组合逻辑环路检测
-  ├─ 时序块赋值强制纠正（seq 块）
-  ├─ 组合逻辑块识别（comb 块保持阻塞赋值）
-  ├─ 位宽不匹配检查（赋值和实例端口）
-  └─ 实例化连接展开（正则映射、悬空、位宽推导、位宽注释、必连端口检查）
-      │
-      ▼
-设计 IR（与语法解耦）
-      │
-      ├─→ [代码生成器] 片段解析 → pyslang SyntaxTree
-      └─→ [slang 反射] 获取外部模块端口、参数、localparam
-      │
-      ▼
-SystemVerilog 源码
-      │
-      ▼  (可选)
-[slang 二次诊断]
-```
+每次编译拥有独立的源码管理器、IP 语法树、常量缓存和函数定义。独立编译可并发执行。
 
 ### 2.1 模块划分
 
-| 模块 | 职责 |
+| 文件 | 职责 |
 |------|------|
-| `lexer` | 将字符流转化为 Token 列表，含复合 Token 合并与模板标识符合并，记录行列号 |
-| `parser` | 语法分析，输出自定义 AST |
-| `ast` | AST 节点定义 |
-| `ir` | 中间表示数据结构 |
-| `semantic` | 语义分析：元编程展开、信号/端口推导、驱动分析、赋值纠正、实例化处理 |
-| `codegen` | 遍历 IR，使用 pyslang 片段生成语法树并序列化为文本 |
-| `slang_integration` | 封装 pyslang 进行 IP 反射、诊断 |
-| `cli` | 命令行接口 |
-| `errors` | 错误/警告定义与格式化 |
+| `include/slip/ast.hpp` | 源码位置、错误、类型化 AST 和解析接口 |
+| `include/slip/ir.hpp` | 解析后的接口、信号、过程和实例 |
+| `include/slip/compiler.hpp` | 编译选项、结果、诊断和公共编译 API |
+| `src/frontend.cpp` | 词法、Pratt 解析、表达式序列化 |
+| `src/functions.cpp` | `defun` 和正则替换函数解释器 |
+| `src/pattern.cpp` | 有匹配资源限制的 PCRE2 封装 |
+| `src/slang_backend.cpp` | filelist、IP 反射、常量求值、设计校验 |
+| `src/compiler.cpp` | 语义分析、依赖排序、接口推断和代码生成 |
+| `src/main.cpp` | C++ CLI 和文本/JSON 诊断 |
 
 ---
 
@@ -210,7 +183,7 @@ Expr ::= (* 表达式：由 Pratt 解析器实现，涵盖所有运算符。
     - 复合 Token：`` ` `` + 关键字 → `` `for ``、`` `if ``、`` `else ``；`` ` `` + 标识符 → `TICK_IDENT`
     - 复合运算符：`===`、`!==`、`<<<`、`>>>`、`**` 等按最长匹配优先合并
     - **模板标识符合并**：将 `ident` + `` ` `` + `var` 合并为单一 `IDENT` Token（如 `data_`i`），支持多变量（如 `a`i_`j`）
-*   Token 携带类型、值、行列号；类 `Lexer` 提供 `tokenize() -> List[Token]`。
+* Token 携带类型、值和源码位置；通过公共 `slip::parse()` 接口取得 AST。
 
 ---
 
@@ -219,7 +192,7 @@ Expr ::= (* 表达式：由 Pratt 解析器实现，涵盖所有运算符。
 ### 5.1 递归下降解析器
 
 *   每个非终结符一个方法，使用 `peek()` / `consume(type)`。
-*   `Parser` 持有 Token 流，入口 `parse_module()` 返回 `Module` AST。
+* 内部解析器持有 Token 流；公共 `slip::parse()` 返回包含模块、函数和 include 指令的 `Unit`。
 *   上下文处理：
     *   模块头直接遇 `{` 则端口列表为空。
     *   `InstanceStmt` 连接列表中识别 `STRING "=>" STRING` 为正则映射。
@@ -232,20 +205,19 @@ Expr ::= (* 表达式：由 Pratt 解析器实现，涵盖所有运算符。
 | 优先级 | 运算符 | 结合性 |
 |--------|--------|--------|
 | 1 (最低) | `?:` (三元) | 右 |
-| 2 | `inside` (集合成员) | 左 |
-| 3 | `\|\|` | 左 |
-| 4 | `&&` | 左 |
-| 5 | `\|` (按位或) | 左 |
-| 6 | `^` (按位异或) | 左 |
-| 7 | `&` (按位与) | 左 |
-| 8 | `<<`, `>>`, `<<<`, `>>>` (移位) | 左 |
-| 9 | `<`, `>`, `<=`, `>=` (关系) | 左 |
-| 10 | `==`, `!=`, `===`, `!==` (相等) | 左 |
-| 11 | `+`, `-` (二元加减) | 左 |
-| 12 | `*`, `/`, `%` (乘除) | 左 |
-| 13 | `**` (幂) | 右 |
-| 14 | 前缀 `+`, `-`, `!`, `~`, `&`, `\|`, `^`；类型转换 `signed'()` / `unsigned'()` | 右 (前缀) |
-| 15 (最高) | `[]`, `[ : ]` (索引)；`N'(expr)` (宽度转换)；`f()` (函数调用) | 左 (后缀) |
+| 2 | `\|\|` | 左 |
+| 3 | `&&` | 左 |
+| 4 | `\|` (按位或) | 左 |
+| 5 | `^` (按位异或) | 左 |
+| 6 | `&` (按位与) | 左 |
+| 7 | `==`, `!=`, `===`, `!==` (相等) | 左 |
+| 8 | `<`, `>`, `<=`, `>=`, `inside` | 左 |
+| 9 | `<<`, `>>`, `<<<`, `>>>` (移位) | 左 |
+| 10 | `+`, `-` (二元加减) | 左 |
+| 11 | `*`, `/`, `%` (乘除) | 左 |
+| 12 | `**` (幂) | 左 |
+| 13 | 前缀 `+`, `-`, `!`, `~`, `&`, `\|`, `^`；类型转换 | 右 (前缀) |
+| 14 (最高) | `[]`, `[ : ]`, `N'(expr)`, `f()` | 左 (后缀) |
 
 *   `<=` 在表达式上下文中为关系运算符；非阻塞赋值由语法层面区分。
 *   `{n{expr}}` 复制由 Pratt 解析器的前缀 `{` 处理，检测后跟 `expr{expr}` 模式。
@@ -255,77 +227,15 @@ Expr ::= (* 表达式：由 Pratt 解析器实现，涵盖所有运算符。
 
 ## 6. AST 设计
 
-节点继承 `ASTNode`，含位置 `loc`。所有节点为 frozen dataclass。核心节点：
+`Expr` 包含 `Location` 和 `std::variant` 表达式节点。节点类型包括
+`Identifier`、`Literal`、`Unary`、`Binary`、`Ternary`、`Select`、`Concat`、
+`Repeat`、`Call`、`Method`、`Paren` 和 `Cast`。子表达式通过不可变的 `ExprPtr`
+共享。表达式构造时检查深度，默认上限为 256。
 
-```python
-class Module(ASTNode):
-    name: str
-    params: tuple[Param, ...]       # 模块参数
-    ports: tuple[PortItem, ...]     # 空元组为隐式端口
-    body: tuple[Statement, ...]     # 包含 LocalParamDecl、SignalDecl 等
-
-class Param(ASTNode):
-    name: str
-    default: Expr                   # 默认值表达式
-
-class PortItem(ASTNode):
-    name: str
-    width: Expr | None = None       # 可选端口位宽
-
-class LocalParamDecl(Statement):
-    name: str
-    value: Expr
-
-class SignalDecl(Statement):
-    is_signed: bool
-    width: Expr | None              # 信号位宽
-    name: str
-    array_range: tuple[Expr, Expr] | None  # 数组维度
-
-class SeqBlock(Statement):
-    clock: str                      # 时钟信号名
-    reset: tuple[str, str] | None   # (极性, 信号名)，如 ('neg', 'rst_n')
-    body: BlockStmt
-
-class CombBlock(Statement):
-    body: BlockStmt
-
-class GenForStmt(Statement):
-    var: str                        # 循环变量名（不含反引号前缀）
-    init: Expr
-    cond: Expr
-    step_var: str                   # 必须与 var 相同
-    step: Expr
-    body: BlockStmt
-
-class GenIfStmt(Statement):
-    cond: Expr
-    then_body: BlockStmt
-    else_body: BlockStmt | None
-
-class CaseStmt(Statement):
-    kind: str                            # 'case', 'casez', 'casex'
-    expr: Expr
-    items: tuple[CaseItem, ...]
-
-class CaseItem(ASTNode):
-    patterns: tuple[Expr, ...]           # 空元组表示 default
-    body: BlockStmt
-
-class InstanceStmt(Statement):
-    module_name: str
-    params: tuple[NamedParam, ...]
-    inst_name: str
-    connections: tuple[Connection, ...]
-
-class Connection(ASTNode):
-    port: str | None                # 显式连接端口名
-    signal: Expr | None             # 含 _、'0/'1 或带位宽常数
-    port_regex: str | None          # 正则映射模式
-    signal_regex: str | None
-```
-
-表达式节点包括：`IdentExpr`、`IntLiteralExpr`、`TickConstExpr`（`'0`/`'1`）、`TickIdentExpr`（`` `i ``）、`StringLiteralExpr`、`BinaryExpr`、`UnaryExpr`、`TernaryExpr`、`IndexExpr`、`ConcatExpr`、`ReplicationExpr`、`CastExpr`、`CallExpr`、`ParenExpr`。
+`Statement` 使用 `std::variant` 表示 `SignalDecl`、`LocalParam`、`Assignment`、
+`Process`、`If`、`For`、`Case`、`Instance` 和 `Group`。语句体以值容器保存。
+`Unit` 保存模块、函数和 include 指令；所有节点保留源码位置用于诊断。
+完整定义以 `include/slip/ast.hpp` 为准。
 
 ---
 
@@ -333,74 +243,15 @@ class Connection(ASTNode):
 
 ### 7.1 IR 数据结构
 
-```python
-@dataclass
-class HDLModule:
-    name: str
-    params: tuple[HDLParam, ...]
-    localparams: tuple[HDLParam, ...]
-    ports: tuple[HDLPort, ...]
-    signals: tuple[HDLSignal, ...]      # 含隐式信号
-    assigns: tuple[HDLAssignment, ...]
-    logic_blocks: tuple[LogicBlock, ...]
-    instances: tuple[HDLInstance, ...]
+`IRModule` 保存模块名、位置、参数、局部参数、端口、内部信号、连续赋值、
+过程、实例及固定的元编程参数。
 
-@dataclass
-class HDLParam:
-    name: str
-    default: str                         # SV 表达式文本
+* `IRSignal`：名称、位宽、数组维度、有符号标记、方向、声明来源和推断来源。
+* `IRInstance`：目标模块、实例名、源码位置、参数和端口连接。
+* 过程和赋值保留类型化表达式；硬件表达式在输出前保留 SV 位宽和四态语义。
 
-@dataclass
-class HDLPort:
-    name: str
-    direction: str                       # 'input', 'output', 'inout'
-    type_: HDLType | None
-
-@dataclass
-class HDLSignal:
-    name: str
-    type_: HDLType | None
-    array_dim: str | None                # SV 文本如 "[0:15]"
-
-@dataclass
-class HDLAssignment:
-    target: str
-    value: str                           # SV 表达式文本
-    is_nonblocking: bool
-
-@dataclass
-class LogicBlock:
-    sensitivity: str                     # 如 "posedge clk or negedge rst_n"
-    body: tuple                          # HDLAssignment | HDLIfBlock | HDLForLoop | HDLCaseBlock
-    kind: str                            # 'always_ff', 'always_comb', 'always_latch', 'initial'
-
-@dataclass
-class HDLForLoop:
-    var: str
-    init: str                            # SV 表达式文本
-    cond: str
-    step: str
-    body: tuple
-
-@dataclass
-class HDLCaseBlock:
-    kind: str                            # 'case', 'casez', 'casex'
-    expr: str                            # SV 表达式文本
-    items: tuple[HDLCaseItem, ...]
-
-@dataclass
-class HDLCaseItem:
-    patterns: tuple[str, ...]            # SV 模式文本；空元组表示 default
-    body: tuple
-
-@dataclass
-class HDLInstance:
-    inst_name: str
-    target: str
-    param_map: tuple[tuple[str, str], ...]
-    port_map: tuple[tuple[str, str], ...]
-    regex_rules: tuple[tuple[str, str], ...]
-```
+定义见 `include/slip/ir.hpp`。Python 参考实现的数据类说明保存在
+`reference/python/docs/python-design.md`。
 
 ### 7.2 语义分析流程
 
@@ -420,17 +271,14 @@ class HDLInstance:
 **循环变量替换与常量折叠**：
 
 *   循环变量（如 `` `i ``）在循环体内被当前迭代值替换为整数字面量。
-*   替换后的表达式进行常量折叠：
-    *   两操作数均为整数字面量的二元运算 → 计算为结果字面量
-    *   操作数为整数字面量的一元运算 → 计算为结果字面量
-    *   代数化简：`x + 0 → x`、`x - 0 → x`、`x * 1 → x`、`x * 0 → 0`、`x / 1 → x`
-    *   三元表达式条件为常量 → 选择对应分支
-    *   括号内为字面量 → 脱括号
-*   包含非常量子表达式（如参数引用 `W`）的运算保持不变，仅折叠常量部分。
+*   元编程控制表达式由 slang 按 SystemVerilog 常量语义求值，保留参数默认表达式的位宽和声明顺序。
+*   位宽、索引中的纯十进制常量运算可以折叠；含参数的表达式保留。不会进行 `x * 0 → 0` 等改变四态语义的代数化简。
+*   电路赋值、条件、端口连接中的表达式只替换循环变量，保留原来的类型、位宽和赋值上下文，由 SystemVerilog 工具计算。
+*   参与元编程控制的参数及其参数依赖固定为生成时默认值，禁止在实例化时覆盖。生成的 SV 带展开期 `$error` 检查，防止下游覆盖不同的值。普通 RTL 参数仍可覆盖。
 
 **模板标识符**：标识符中可包含反引号循环变量（如 `stage_`i`、`a`i_`j`）。词法分析器在合并阶段将其识别为单一 Token，展开时替换变量部分（`stage_`i → stage_0, stage_1, …）。
 
-**循环变量不可赋值**：`` `i `` 为 `TickIdentExpr`，语法上不能出现在赋值左侧（`LValue` 仅接受普通标识符）。循环变量的值由展开引擎在每个迭代中确定，不可在体内修改。
+**循环变量不可赋值**：`` `i `` 是带 `meta` 标记的 `Identifier`，不能在循环体内用作赋值目标。循环变量的值由展开引擎在每次迭代中确定。
 
 **示例**：
 
@@ -447,11 +295,11 @@ module reverse #(param W=8) (clk, in, out) {
 ```
 
 展开后（W=8）：
-*   `i=0`：`out[W - 1 - 0]` → 折叠为 `out[W - 1]`（`- 0` 消除）
-*   `i=1`：`out[W - 1 - 1]` → 折叠为 `out[W - 2]`
-*   `i=7`：`out[W - 1 - 7]` → 折叠为 `out[W - 8]`
+*   `i=0`：`out[W - 1 - 0] = in[0]`
+*   `i=1`：`out[W - 1 - 1] = in[1]`
+*   `i=7`：`out[W - 1 - 7] = in[7]`
 
-所有索引表达式中的常量运算在编译期完成，仅保留含参数的子表达式。
+含参数的索引表达式由下游工具求值；纯十进制循环索引（如 `` `i - 1 ``）可直接折叠。
 
 #### 7.2.2 符号收集与隐式声明
 
@@ -477,7 +325,7 @@ module reverse #(param W=8) (clk, in, out) {
 
 #### 7.2.5 组合逻辑块处理
 
-*   `CombBlock` 转为 `LogicBlock` 类型 `always_comb`。
+* `comb` 解析为组合类型的 `Process`，输出为 `always_comb`。
 *   若检测到锁存器模式，使用 `always_latch`（无敏感列表）。
 
 #### 7.2.6 实例化与正则端口映射
@@ -491,7 +339,7 @@ module reverse #(param W=8) (clk, in, out) {
 **连接展开与位宽推导**
 
 *   **输入**：目标模块信息（通过同设计 IR 或 `slang` 反射），包括端口列表（方向、宽度表达式）、参数（含可覆盖与 `localparam`）及实例化覆盖值。
-*   **有限常量求值器**：仅支持常量、参数引用和基本算术；失败则隐式信号需要用户显式声明。
+* **参数上下文**：位宽中的子模块参数、默认值和局部参数被转换到调用方作用域；硬件表达式保持符号形式，由 slang 在完整设计中校验。
 *   **映射优先级**：
     1. 显式连接（最高优先级）
     2. 同名连接
@@ -505,12 +353,6 @@ module reverse #(param W=8) (clk, in, out) {
     - `$add(\1, 1)` / `$sub(\1, 1)` — 算术运算
     - `$bit_reverse(\1)` / `$bit_select(\1, high, low)` — 位操作
     - 支持多个函数调用和前后缀文本：`"pre_$upper(\1)_post"`
-*   **自定义正则函数**：通过 Python API 注册自定义函数：
-    ```python
-    from slip.semantic.regex_funcs import register
-    register("my_func", lambda s: f"prefix_{s}")
-    ```
-    注册后可在替换字符串中使用 `$my_func(\1)`。自定义函数可覆盖内置函数。函数签名必须接受字符串参数并返回字符串。
 *   **原生自定义函数（defun）**：在 Slip 中直接定义函数：
     ```slip
     defun prefix(s):
@@ -522,26 +364,26 @@ module reverse #(param W=8) (clk, in, out) {
     defun inc(n):
         return n + 1
     ```
-    函数体支持完整 Python 表达式，包括：字符串拼接（`+`）、字符串方法（`.upper()`、`.lower()`、`.reverse()`、`.replace()`、`.strip()`、`.split()`、`.startswith()` 等）、算术运算（`+`、`-`、`*`、`/`、`%`）、方法链式调用、内置函数（`len()`、`int()`、`str()` 等）、索引切片（`s[0]`、`s[1:3]`、`s[3:]`、`s[:3]`、`s[-1]`）、三元表达式。函数可在顶层任意位置定义（模块前或后），所有 `defun` 在实例解析前注册。
+    函数体支持受限的 Python 风格表达式，由 C++ 解释器求值，包括：字符串拼接（`+`）、字符串方法（`.upper()`、`.lower()`、`.reverse()`、`.replace()`、`.strip()`、`.split()`、`.startswith()` 等）、算术运算（`+`、`-`、`*`、`/`、`%`）、方法链式调用、内置函数（`len()`、`int()`、`str()` 等）、索引切片（`s[0]`、`s[1:3]`、`s[3:]`、`s[:3]`、`s[-1]`）、三元表达式。函数可在顶层任意位置定义（模块前或后），所有 `defun` 在实例解析前注册。
 *   **连接完成检查**：
     - 输入/双向端口未连接且非悬空 → 报错。
     - 输出端口未连接 → 警告（悬空允许）。
-    - 外部 IP 模块跳过检查。
+    - 外部 IP 也参与完整设计校验。
 *   **`localparam` 覆盖检查**：若实例化 `#(...)` 中包含 `localparam`，报错。
 
 ---
 
 ## 8. 代码生成
 
-*   基于片段解析 + SyntaxRewriter：
+* 从 IR 直接生成 SV 文本：
     *   `seq` → `always_ff @(...)`，赋值 `<=`
     *   `comb` → `always_comb`，保留 `=`
     *   `initial` → `initial begin ... end`，保留 `=`
     *   `case`/`casez`/`casex` → `case`/`casez`/`casex ... endcase`
-    *   实例化 → 根据 `port_map` 生成 `.port(signal)`，若为悬空则省略该连接。
-*   模块按拓扑排序输出（定义在实例化之前）。循环实例化依赖报 `SlipSemanticError`（硬件中非法）。
+    * 实例化 → 根据 `IRInstance::connections` 生成 `.port(signal)`，若为悬空则省略该连接。
+* 接口解析按依赖拓扑排序；输出模块按名称保持确定顺序。循环实例化依赖报 `E_MODULE_CYCLE`（硬件中非法）。
 *   `'0` 和 `'1` 直接输出为 Verilog 全位宽常量。
-*   生成的 SystemVerilog 通过 pyslang 进行语法验证。
+* 生成的 SystemVerilog 与全部 IP 一起通过 slang 语法及语义校验。
 *   **生成代码注释标注**：为便于 review，生成的 SV 附带以下注释：
     - `// implicit` — 该信号/端口为编译器自动生成（非用户显式声明）
     - `// no width` — 该信号/端口未指定位宽，默认为 1-bit
@@ -553,27 +395,14 @@ module reverse #(param W=8) (clk, in, out) {
 
 ### 9.1 IP 反射
 
-`slang_integration.reflect_module(sv_path, module_name)` 返回：
-
-```python
-@dataclass
-class ExternalModuleInfo:
-    name: str
-    params: list[dict]      # 包含 is_local 标记
-    ports: list[dict]       # 包含 width_expr 等
-```
+内部 `Backend` 保留 IP 的源码管理器和语法树，从统一的 slang 编译上下文中
+提取模块参数、`localparam`、端口方向、位宽和数组维度。非顶层模块也可反射。
+外部 SV 接口端口和类型参数会明确报错。
 
 ### 9.2 Filelist 解析
 
-`slang_integration.parse_filelist(filelist_path)` 解析 VCS 格式 filelist 文件：
-
-```python
-@dataclass(frozen=True)
-class FilelistData:
-    files: tuple[Path, ...]      # 源文件列表（按顺序）
-    incdirs: tuple[Path, ...]    # include 搜索路径
-    defines: tuple[str, ...]     # 宏定义（"MACRO=value" 或 "MACRO"）
-```
+通过 `slip::Options::filelists` 或 CLI `-f` 指定 VCS 格式 filelist，
+收集源文件、include 路径和宏定义。
 
 支持的格式：
 - `+incdir+路径` — include 搜索目录，多个路径用 `+` 分隔
@@ -585,16 +414,16 @@ class FilelistData:
 
 ### 9.3 两遍 IP 扫描
 
-`slang_integration.build_ip_index(filelists, ip_dirs)` 构建 IP 模块索引：
+内部 `Backend` 根据 `Options::filelists` 和 `Options::ip_dirs` 构建 IP 模块索引：
 
 **Pass 1 — 收集**：
 - 解析所有 filelist 文件，收集源文件、incdir、define
 - 递归扫描 IP 目录（`*.sv`、`*.v`），合并去重
 
 **Pass 2 — 反射**：
-- 使用 `SyntaxTree.fromFiles()` 一次性解析所有 IP 文件，共享预处理器上下文
+- 使用 `slang::syntax::SyntaxTree::fromFiles()` 一次性解析所有 IP 文件，共享预处理器上下文
 - define 跨文件自动传播，解决 define 顺序问题
-- 从统一 `Compilation` 中提取所有模块信息，构建 `IPIndex`
+- 从统一 `Compilation` 中提取所有模块信息，构建本次编译的接口索引
 
 ---
 
@@ -609,6 +438,10 @@ slip check [-ip <ip_dirs>] [-f <filelists>] <file.slip>
 - `-o <out_dir>` — 输出目录（默认 `./build`）
 - `-ip <ip_dir>` — IP 源目录，可多次指定，递归扫描 `*.sv`/`*.v`
 - `-f <file.f>` — VCS 格式 filelist 文件，可多次指定
+- `--strict` — 显式声明信号，位宽不匹配视为错误
+- `--stdout` — `build` 的生成结果写到标准输出
+- `--diagnostics=json` — 逐行 JSON 诊断
+- 输入文件 `-` — 从标准输入读取
 
 文件加载优先级：
 1. `-f filelist.f`（最高优先级，按文件内顺序）
@@ -619,25 +452,18 @@ slip check [-ip <ip_dirs>] [-f <filelists>] <file.slip>
 
 ## 11. 错误处理
 
-错误类型：
+公共 API 抛出 `slip::Error`，包含源码位置、稳定的错误代码和原始消息。
+例如 `E_PARSE`、`E_CONSTANT`、`E_CONNECTION`、`E_MULTIPLE_DRIVERS`、`E_SV`。
+警告保存在 `slip::Result::warnings`；CLI 统一输出到 stderr。
 
-*   `SlipSyntaxError`：语法错误（词法/语法分析阶段）
-*   `SlipSemanticError`：语义错误（分析/展开阶段），包括：
-    *   `constant in port connection must have explicit width (e.g. 1'b0) or use '0/'1`
-    *   `cannot override localparam '...'`
-    *   `unconnected input port '...'`
-    *   `unable to infer width for implicit signal '...'`
-    *   `cannot evaluate '...' at compile time`
-    *   `unsupported operator '...' in compile-time expression`
-    *   `#for step variable '...' must match loop variable '...'`
-    *   `#for loop exceeded 1024 iterations`
-    *   `signal '...' driven by multiple sequential/combinational blocks`
-    *   `combinational loop detected: ...`
-    *   `duplicate declaration of '...'`
-    *   `reset polarity inconsistency: ...`
-*   警告（通过 `warnings.warn()` 发出）：
-    *   `width mismatch: '...' is N bits, but value is M bits`
-    *   `port width mismatch: '...' expects N bits, but '...' is M bits`
+退出码：成功为 0，编译失败为 1，CLI 参数错误为 2。
+`--diagnostics=json` 输出包含 `severity`、`code`、`file`、`line`、`column`
+和 `message` 字段的逐行 JSON。
+
+默认资源限制为每模块 10,000 次元编程循环迭代、100,000 条展开语句、
+128 层 include、每源码 1,000,000 个 token。循环值重复、整数溢出或达到
+资源上限会报错。元编程控制结果和 `defun` 整数使用有符号 64 位整数；
+硬件字面量仍保留完整 SV 位宽。`defun` 字符串按字节处理。
 
 ---
 
@@ -661,4 +487,12 @@ slip check [-ip <ip_dirs>] [-f <filelists>] <file.slip>
 *   位宽不匹配警告（赋值和实例端口）
 *   实例化与 IP 反射
 *   模块拓扑排序
-*   代码生成正确性（pyslang 验证）
+*   代码生成正确性（slang 完整设计验证）
+
+## 编译校验与严格模式
+
+`slip build` 与 `slip check` 使用相同的完整设计校验。IP 预处理或解析错误、未知端口/参数、重复参数覆盖、递归模块依赖、过程块内不支持的语句均为编译错误。实例输出也参与多驱动检查；组合环路分析包括 if/case 的控制依赖与重叠位选。
+
+`--strict` 要求显式信号/端口声明，并将赋值及端口位宽不匹配提升为错误。默认模式保留隐式信号功能。校验失败时不写出任何新文件。
+
+默认 `ctest --preset release` 运行 C++ API、共享用例和 CLI 测试；安装 Verilator 后还运行独立参考 RTL 仿真。Python 回归和迁移比较在 `reference/python/` 中单独运行。

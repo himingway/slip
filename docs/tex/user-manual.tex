@@ -102,8 +102,8 @@ Slip is a minimal hardware description language (DSL) that compiles \code{.slip}
 \begin{itemize}
   \item \textbf{Minimal syntax} --- port directions, signal types, and instance wiring are inferred from context.
   \item \textbf{Direct mapping} --- every Slip construct maps 1:1 to a SystemVerilog equivalent.
-  \item \textbf{Compile-time metaprogramming} --- \slipinline{`for} loops and \slipinline{`if} conditionals are fully expanded before code generation, with automatic constant folding.
-  \item \textbf{Validated output} --- generated SystemVerilog is checked against the IEEE 1800-2017 standard via \href{https://github.com/MikePopoloski/slang}{pyslang}.
+  \item \textbf{Compile-time metaprogramming} --- \slipinline{`for} loops and \slipinline{`if} conditionals are fully expanded before code generation, with SystemVerilog constant evaluation.
+  \item \textbf{Validated output} --- generated SystemVerilog is checked against the IEEE 1800-2017 standard via \href{https://github.com/MikePopoloski/slang}{slang}.
 \end{itemize}
 
 % ──────────────────────────────────────────────────────────────────
@@ -113,25 +113,29 @@ Slip is a minimal hardware description language (DSL) that compiles \code{.slip}
 \section{Prerequisites}
 
 \begin{itemize}
-  \item Python $\geq$ 3.10
-  \item \href{https://github.com/astral-sh/uv}{uv} (recommended) or pip
+  \item A C++20 compiler and CMake $\geq$ 3.24
+  \item PCRE2 8-bit development libraries
+  \item slang 10, installed or fetched by CMake from the pinned source revision
+  \item Python only when building slang's generated C++ headers from source
 \end{itemize}
 
-\section{Install with uv}
+The Slip executable does not require Python or pyslang at runtime. The Python
+reference implementation is isolated in \code{reference/python/}.
+
+\section{Build and Install}
 
 \begin{lstlisting}[language=bash]
 git clone https://github.com/himingway/slip.git
 cd slip
-uv sync
+cmake --preset release
+cmake --build --preset release --parallel 2
+ctest --preset release
+cmake --install build/release --prefix "$HOME/.local"
 \end{lstlisting}
 
-\section{Install with pip}
-
-\begin{lstlisting}[language=bash]
-git clone https://github.com/himingway/slip.git
-cd slip
-pip install -e .
-\end{lstlisting}
+Add \code{\$HOME/.local/bin} to \code{PATH} to use \code{slip}. Offline builds can
+use \code{CMAKE\_PREFIX\_PATH} and \code{SLIP\_FETCH\_SLANG=OFF}; see
+\code{docs/development.md}. Verilator enables the independent RTL behavioral test.
 
 % ──────────────────────────────────────────────────────────────────
 \chapter{Command Line Interface}
@@ -158,7 +162,9 @@ slip check -ip <ip_dir> <file.slip>           # with IP directory
 slip check -f <file.f> <file.slip>            # with filelist
 \end{lstlisting}
 
-Runs the full compilation pipeline (parsing, semantic analysis, code generation) but discards the output. Useful for CI validation.
+Runs the full compilation pipeline but discards the output. Generated modules and external IP are validated together, sharing the same IP preprocessing context. All modules are validated before any build output is written.
+
+Use \code{--strict} with either command in CI to require explicit signal and port declarations and reject assignment or port width mismatches. Default mode continues to support annotated implicit signals.
 
 % ════════════════════════════════════════════════════════════════════
 % Part II: Language Reference
@@ -255,7 +261,7 @@ Port directions are inferred from usage (see Chapter~\ref{ch:port-inference}).
 
 \section{Parameters (\code{param})}
 
-Parameters are declared in the module header and can be overridden during instantiation:
+Parameters are declared in the module header and can be overridden during instantiation unless they control Slip compile-time expansion:
 
 \begin{lstlisting}[language=Slip]
 module counter #(param WIDTH = 8, param MAX = 255) (clk, rst_n, count) {
@@ -1086,27 +1092,6 @@ Multiple functions and prefix/suffix text are supported:
 "a_(.*)_b_(.*)" => "$upper(\1)_$lower(\2)"  // multiple functions
 \end{lstlisting}
 
-\subsection{Custom Functions}
-
-Register custom functions via the Python API:
-
-\begin{lstlisting}[language=Python]
-from slip.semantic.regex_funcs import register
-
-def my_func(s: str) -> str:
-    return f"prefix_{s}"
-
-register("my_func", my_func)
-\end{lstlisting}
-
-Then use in Slip:
-
-\begin{lstlisting}[language=Slip]
-child u1 { .clk, "data_(.*)" => "$my_func(\1)" };
-\end{lstlisting}
-
-Custom functions can override built-in functions. The function signature must accept string arguments and return a string.
-
 \subsection{Native Custom Functions (defun)}
 
 Define custom functions directly in Slip using Python-style syntax:
@@ -1132,7 +1117,7 @@ module top (clk) {
 }
 \end{lstlisting}
 
-The function body supports full Python expressions, including:
+The C++ interpreter supports a restricted Python-style expression language, including:
 \begin{itemize}
   \item String concatenation: \code{a + b}
   \item String methods: \code{.upper()}, \code{.lower()}, \code{.reverse()}, \code{.replace()}, \code{.strip()}, \code{.split()}, \code{.startswith()}, etc.
@@ -1327,26 +1312,9 @@ Template identifiers with multiple backtick variables (e.g., \code{a`i\_`j}) are
 
 \label{sec:constant-folding}
 
-After substituting the loop variable with its current integer value, the expansion engine performs \textbf{constant folding} on the resulting expression tree:
+Loop variables are substituted into hardware expressions without changing literal widths, signedness, four-state values, or assignment context. Hardware arithmetic is left to SystemVerilog. Pure decimal constants in index and dimension expressions can be folded; algebraic identities such as replacing an unknown value multiplied by zero are not applied.
 
-\begin{table}[htbp]
-\centering
-\begin{tabular}{ll}
-\toprule
-\textbf{Pattern} & \textbf{Result} \\
-\midrule
-Both operands are integer literals & Evaluate to result literal \\
-One operand is \code{0}, op is \code{+} or \code{-} & Identity: return other operand \\
-One operand is \code{1}, op is \code{*} or \code{/} & Identity: return other operand \\
-One operand is \code{0}, op is \code{*} & Zero: return \code{0} \\
-Unary operand is integer literal & Evaluate to result literal \\
-Ternary condition is integer literal & Select corresponding branch \\
-Parenthesized expression is literal & Unwrap parentheses \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-Subexpressions containing non-constant references (e.g., parameters) are preserved unchanged. Only the constant parts are simplified.
+Compile-time controls are evaluated by slang with SystemVerilog semantics. Parameters used directly or indirectly by these controls are fixed at their generation-time defaults. Slip rejects overrides of these parameters, and generated elaboration checks reject different values supplied by downstream SystemVerilog. Change the source configuration and rebuild to change such a parameter. Ordinary RTL parameters remain overridable.
 
 \textbf{Example} --- bit reversal with parameterized width:
 
@@ -1363,14 +1331,7 @@ module bit_reverse #(param W = 8) (din, dout) {
 }
 \end{lstlisting}
 
-When \code{W=8} and \code{`i=0}, the index expression \code{W - 1 - 0} is folded:
-\begin{enumerate}
-  \item Substitute \code{`i} with \code{0}: \code{W - 1 - 0}
-  \item Fold \code{1 - 0} $\to$ \code{1}: \code{W - 1}
-  \item Result: \code{dout[W - 1] = din[0]}
-\end{enumerate}
-
-The generated SystemVerilog contains no \code{- 0} artifacts.
+When \code{W=8} and \code{`i=0}, substitution produces \code{dout[W - 1 - 0] = din[0]}. Expressions containing \code{W} stay symbolic and are evaluated by the downstream tool.
 
 \subsection{Compile-Time Expression Evaluation}
 
@@ -1419,7 +1380,7 @@ The condition must be a compile-time constant expression (parameter, localparam,
   \item Loop variables (\slipinline{`i}) cannot be assigned within the loop body --- they are controlled by the expansion engine.
   \item \slipinline{`for} / \slipinline{`if} conditions must be evaluable at compile time.
   \item The step variable must match the loop variable (e.g., \slipinline{`i = `i + 1}).
-  \item Maximum 1024 iterations per loop (prevents infinite loops).
+  \item A default maximum of 10,000 loop iterations across each module; repeated loop values are diagnosed immediately.
 \end{itemize}
 
 % ──────────────────────────────────────────────────────────────────
@@ -1550,7 +1511,7 @@ slip build -f ip.f -ip ./ip_cores design.slip
   \item Slip collects IP sources from filelists (\code{-f}) and IP directories (\code{-ip}).
   \item IP directories are scanned recursively for \code{.sv} and \code{.v} files.
   \item All IP files are parsed together with a shared preprocessor context, so \code{`define} macros propagate across files.
-  \item When an instance references a module not defined in the \code{.slip} source, Slip uses pyslang to reflect the external module's ports and parameters.
+  \item When an instance references a module not defined in the \code{.slip} source, Slip uses slang to reflect the external module's ports and parameters.
   \item Port widths are evaluated using the instance's parameter overrides.
   \item Signals are created with correct widths for regex-mapped connections.
 \end{enumerate}
@@ -1819,8 +1780,8 @@ Integer literal contains a digit invalid for the specified radix (e.g.\ \texttt{
 \item[\texttt{integer literal has no actual digit value}]
 Literal has only underscores after the radix prefix (e.g.\ \texttt{4'b\_}).
 
-\item[\texttt{`for loop exceeded 1024 iterations}]
-Metaprogramming loop body was expanded more than 1024 times.
+\item[\texttt{E\_LIMIT}]
+A compilation resource limit was exceeded. Defaults include 10,000 metaprogram loop iterations and 100,000 expanded statements per module. Metaprogram controls and defun integers must fit a signed 64-bit integer; defun strings operate on bytes.
 
 \item[\texttt{cannot evaluate 'name' at compile time}]
 Non-constant expression in \slipinline{`for}/\slipinline{`if} condition, init, or step.
@@ -1872,9 +1833,6 @@ A reset signal is used with conflicting polarity (both \code{pos:} and \code{neg
 
 \item[\texttt{in seq block of module 'M', the blocking assignment to 'name' reads its own previous value}]
 A blocking assignment converts to nonblocking in a \code{seq} block (unconditionally, as described in the conversion chapter). This warning fires for the assignments whose meaning that changes: a read-modify-write of storage already written on the same path, such as a loop accumulator (\code{for (...) \{ sum = sum + b; \}}) or \code{y = 0; y = y + b;}. The read will observe the pre-clock value, so restructure or use a \code{comb} block if the updated value was intended. Register transfers (shift registers, \code{t = a + 1; o = t;}) convert silently.
-
-\item[\texttt{pyslang not installed --- skipping validation}]
-Install \code{pyslang} to enable IEEE 1800 validation of generated output.
 
 \item[\texttt{width mismatch: 'name' is N bits, but value is M bits}]
 An assignment has mismatched widths between the target signal and the value expression.
@@ -1967,8 +1925,12 @@ module bit_reverse #(
     output logic [W - 1:0] dout
 );
 
+    if (W !== (8)) begin : __slip_frozen_W
+        $error("W controls Slip compile-time expansion and cannot be overridden");
+    end
+
     always_comb begin
-        dout[W - 1] = din[0];
+        dout[W - 1 - 0] = din[0];
         dout[W - 1 - 1] = din[1];
         dout[W - 1 - 2] = din[2];
         dout[W - 1 - 3] = din[3];
@@ -1981,7 +1943,7 @@ module bit_reverse #(
 endmodule
 \end{lstlisting}
 
-Note: constant folding simplifies \code{W - 1 - 0} to \code{W - 1}, but leaves expressions like \code{W - 1 - 1} unfolded because they contain non-constant subexpressions. The downstream synthesis tool evaluates these at elaboration time.
+Note: parameter-dependent indices remain symbolic. The downstream tool evaluates them during elaboration; W cannot be overridden because it controls compile-time expansion.
 
 \section{State Machine with Localparams}
 

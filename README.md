@@ -12,7 +12,7 @@ English | **[中文](README_CN.md)** | **[User Manual (PDF)](docs/tex/user-manua
 
 Slip is a compact hardware description language designed as syntactic sugar over SystemVerilog. It provides a streamlined syntax for common hardware design patterns — signal declarations, combinational and sequential logic, module instantiation with regex port mapping, and compile-time metaprogramming — while generating clean, human-readable SystemVerilog output.
 
-Every Slip construct maps directly to a SystemVerilog equivalent. The generated output is validated against the IEEE 1800-2017 standard via [pyslang](https://github.com/MikePopoloski/slang) (Python bindings for the [slang](https://github.com/MikePopoloski/slang) compiler).
+Slip is a C++20 compiler that links directly to [slang](https://github.com/MikePopoloski/slang) for constant evaluation, IP reflection and whole-design validation. Python is retained only as a [reference implementation](reference/python/README.md). See [compiler design and compatibility](docs/development.md).
 
 ## Features
 
@@ -26,18 +26,18 @@ Every Slip construct maps directly to a SystemVerilog equivalent. The generated 
 - **Case statements** — `case`/`casez`/`casex` with multi-pattern, default, and `?` wildcard support
 - **Inside operator** — `x inside {1, 2, 3}` for set membership testing
 - **Compound assignments** — `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`, `<<<=`, `>>>=` desugared at parse time
-- **Compile-time metaprogramming** — `` `for `` loops and `` `if `` conditionals with constant folding
+- **Compile-time metaprogramming** — `` `for `` loops and `` `if `` conditionals with SystemVerilog constant evaluation
 - **Template identifiers** — `` `for `` loop variables expand inside identifier names, including multi-variable names like `a`i_`j`
 - **Full operator set** — arithmetic shifts (`<<<`/`>>>`), exponentiation (`**`), case equality (`===`/`!==`), width cast (`8'(expr)`)
 - **Replication syntax** — `{4{1'b0}}` generates correct SystemVerilog replication
 - **Module instantiation** — concise syntax with same-name shorthand (`.clk`), explicit connections, and regex port mapping
 - **Include directive** — `include "helpers.slip"` imports `defun` functions and modules from other Slip files with recursive resolution and cycle detection
-- **IP integration** — automatic port/parameter reflection of external SystemVerilog IP via pyslang, with VCS filelist (`-f`) support and recursive directory scanning
+- **IP integration** — automatic port/parameter reflection of external SystemVerilog IP via slang, with VCS filelist (`-f`) support and recursive directory scanning
 - **Parameter and localparam** — module-level parameters with override, body-level localparams without
 - **Multi-driver detection** — a signal driven by multiple `seq`/`comb` blocks or continuous assignments raises a compile error (disjoint bit-ranges are allowed)
 - **Combinational loop detection** — feedback loops inside `comb` blocks are detected and reported as errors
 - **Width mismatch warnings** — assignment and instance port width mismatches are reported as warnings; unsized constants are range-checked against the target instead of assumed 32-bit
-- **Module topological sort** — modules are emitted in dependency order; cyclic dependencies raise a compile error
+- **Module topological sort** — interfaces are resolved in dependency order; cyclic dependencies raise a compile error
 - **Constant validation** — bare integers in port connections are rejected; integer literal radix is validated
 - **Dangling port marker** — `.rst_n(_)` leaves a port intentionally unconnected
 
@@ -82,6 +82,10 @@ module pipeline #(
     input logic [WIDTH - 1:0] din,
     output logic [WIDTH - 1:0] dout
 );
+
+    if (STAGES !== (3)) begin : __slip_frozen_STAGES
+        $error("STAGES controls Slip compile-time expansion and cannot be overridden");
+    end
 
     logic [WIDTH - 1:0] stage [0:STAGES - 1];
 
@@ -253,17 +257,6 @@ child u7 { .clk, "a_(.*)" => "pre_$upper(\1)_post" };   // prefix + suffix
 - Arithmetic: `$add`, `$sub`, `$mul`, `$div`, `$mod`
 - Bit: `$bit_reverse`, `$bit_select`
 
-**Custom Functions (Python API):**
-```python
-from slip.semantic.regex_funcs import register
-
-def my_func(s: str) -> str:
-    return f"prefix_{s}"
-
-register("my_func", my_func)
-```
-Then use `$my_func(\1)` in Slip. Custom functions can override built-in ones.
-
 **Native Custom Functions (defun):**
 ```slip
 defun prefix(s):
@@ -282,7 +275,7 @@ child u1 {
     "ch_(.*)" => "$inc(\1)"
 };
 ```
-Supported: full Python expressions including string concatenation (`+`), string methods (`.upper()`, `.lower()`, `.reverse()`, `.replace()`, `.strip()`, `.split()`, `.startswith()`, etc.), arithmetic (`+`, `-`, `*`, `/`, `%`), method chaining, built-in functions (`len()`, `int()`, `str()`), indexing/slicing (`s[0]`, `s[1:3]`, `s[3:]`, `s[:3]`, `s[-1]`), ternary expressions.
+`defun` uses a restricted Python-style expression language evaluated by the C++ interpreter. Supported features include string concatenation (`+`), string methods (`.upper()`, `.lower()`, `.reverse()`, `.replace()`, `.strip()`, `.split()`, `.startswith()`, etc.), arithmetic (`+`, `-`, `*`, `/`, `%`), method chaining, built-in functions (`len()`, `int()`, `str()`), indexing/slicing (`s[0]`, `s[1:3]`, `s[3:]`, `s[:3]`, `s[-1]`), ternary expressions.
 
 ### Special Constants
 
@@ -294,19 +287,28 @@ Supported: full Python expressions including string concatenation (`+`), string 
 
 ## Installation
 
+### Native C++ compiler
+
+Requires a C++20 compiler, CMake >= 3.24 and PCRE2 development libraries. CMake uses an installed slang 10 package or fetches a pinned version and its dependencies. Building slang requires Python; running Slip does not.
+
 ```bash
-# Clone
-git clone https://github.com/himingway/slip.git
-cd slip
-
-# Install dependencies (requires uv)
-uv sync
-
-# Or with pip
-pip install -e .
+cmake --preset release
+cmake --build --preset release --parallel 2
+ctest --preset release
+build/release/slip check tests/fixtures/simple.slip
 ```
 
-Requires Python >= 3.10.
+See [docs/development.md](docs/development.md) for offline builds, sanitizers, compatibility limits and migration validation.
+
+Install the CLI:
+
+```sh
+cmake --install build/release --prefix "$HOME/.local"
+```
+
+With `$HOME/.local/bin` on `PATH`, `slip` runs the C++ compiler.
+
+The optional Python oracle has [separate installation and test instructions](reference/python/README.md).
 
 ## Usage
 
@@ -326,7 +328,17 @@ slip build -f ip.f -ip ip_dir design.slip # filelist + directory (combined)
 slip check design.slip                    # full pipeline (incl. SV validation), nothing written
 slip check -ip ip_dir design.slip         # with IP directory
 slip check -f ip.f design.slip            # with filelist
+slip check --strict design.slip           # explicit signals; width mismatches are errors
 ```
+
+### Compilation guarantees
+
+- Generated modules and external IP are elaborated together by slang, using the same parsed IP sources, defines, and include paths as interface reflection. Invalid port/parameter names and unresolved identifiers are errors.
+- All modules are validated before any output file is written. A compilation error preserves existing build artifacts.
+- Interfaces propagate from child modules through every wrapper. Parameter-dependent dimensions are translated into the parent scope, including instance overrides and localparam dependencies.
+- Hardware expressions preserve their literal widths, signedness, four-state values, and assignment context. Slip substitutes loop variables without applying Python arithmetic to the resulting hardware expression.
+- Parameters used directly or indirectly by Slip metaprogram controls are fixed at their defaults for that generated module. Overrides are rejected in Slip; generated elaboration checks also reject different values supplied by downstream SV. To change them, change the source configuration and rebuild. Parameters used only for ordinary RTL dimensions remain overridable.
+- `--strict` requires explicit signal and port declarations and treats assignment/port width mismatches as errors. It is recommended for CI; the default continues to support annotated implicit signals. Normal single-bit declarations are accepted.
 
 ### Filelist Format
 
@@ -368,20 +380,23 @@ Source (.slip)
                                        SystemVerilog (.sv)
 ```
 
-1. **Lexer** — regex-based tokenizer with post-lex merging for compound tokens
+The C++ implementation lives in `src/` and `include/slip/`; its tests and shared HDL fixtures live in `tests/`. The Python oracle is isolated in `reference/python/`.
+
+1. **Lexer** — tokenization with compound operators, comments and template identifiers
 2. **Parser** — recursive-descent for statements, Pratt parser for expressions
 3. **Semantic Analysis** — include resolution, metaprogramming expansion, symbol collection, driver analysis, combinational loop detection, assignment correction, width mismatch checking, IR building, instance resolution with port width inference
-4. **Codegen** — IR-to-SystemVerilog emission with pyslang validation and review annotations (`// implicit`, `// no width`, `// width from X.Y`)
+4. **Codegen** — IR-to-SystemVerilog emission with slang validation and review annotations (`// implicit`, `// no width`, `// width from X.Y`)
 
 ## Running Tests
 
-```bash
-# Run all tests
-uv run pytest tests/ -v
-
-# With coverage
-uv run pytest tests/ --cov=slip --cov-report=term-missing
+```sh
+ctest --preset release
+cmake --preset sanitize
+cmake --build --preset sanitize --parallel 2
+ctest --preset sanitize
 ```
+
+With Verilator installed, CTest also runs a 128-cycle simulation against independent reference RTL. Python regression and migration comparison tests run separately; see [reference](reference/python/README.md).
 
 ## License
 

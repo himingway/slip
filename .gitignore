@@ -1,17 +1,3 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.egg-info/
-*.egg
-dist/
-build/
-*.whl
-
-# Virtual environments
-.venv/
-venv/
-
 # IDE
 .vscode/
 .idea/
@@ -19,20 +5,13 @@ venv/
 *.swo
 *~
 
-# Testing
-.pytest_cache/
-.coverage
-htmlcov/
-
 # Build output
 build/
+dist/
 
 # OS
 .DS_Store
 Thumbs.db
-
-# uv
-.python-version
 
 # LaTeX auxiliary files
 *.aux
