@@ -396,7 +396,7 @@ cmake --build --preset sanitize --parallel 2
 ctest --preset sanitize
 ```
 
-With Verilator installed, CTest also runs a 128-cycle simulation against independent reference RTL. Python regression and migration comparison tests run separately; see [reference](reference/python/README.md).
+With Verilator installed, CTest also runs four independent simulations covering pipeline arithmetic, combinational logic, state machines, and parameterized arrays. See [testing and coverage](docs/testing.md) for independent regressions, sanitizer checks, coverage reports and fuzzing. Python regression and migration comparison tests run separately; see [reference](reference/python/README.md).
 
 ## License
 

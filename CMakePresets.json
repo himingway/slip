@@ -13,7 +13,10 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "SLIP_SANITIZERS": false,
-        "CMAKE_EXPORT_COMPILE_COMMANDS": true
+        "CMAKE_EXPORT_COMPILE_COMMANDS": true,
+        "SLIP_COVERAGE": false,
+        "SLIP_FUZZING": false,
+        "SLIP_LIBFUZZER": false
       }
     },
     {
@@ -23,6 +26,33 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "RelWithDebInfo",
         "SLIP_SANITIZERS": true,
+        "CMAKE_EXPORT_COMPILE_COMMANDS": true,
+        "SLIP_COVERAGE": false,
+        "SLIP_FUZZING": false,
+        "SLIP_LIBFUZZER": false
+      }
+    },
+    {
+      "name": "coverage",
+      "binaryDir": "${sourceDir}/build/coverage",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "SLIP_SANITIZERS": false,
+        "SLIP_COVERAGE": true,
+        "SLIP_FUZZING": true,
+        "SLIP_LIBFUZZER": false,
+        "CMAKE_EXPORT_COMPILE_COMMANDS": true
+      }
+    },
+    {
+      "name": "fuzz",
+      "binaryDir": "${sourceDir}/build/fuzz",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "SLIP_SANITIZERS": true,
+        "SLIP_COVERAGE": false,
+        "SLIP_FUZZING": true,
+        "SLIP_LIBFUZZER": false,
         "CMAKE_EXPORT_COMPILE_COMMANDS": true
       }
     }
@@ -35,6 +65,14 @@
     {
       "name": "sanitize",
       "configurePreset": "sanitize"
+    },
+    {
+      "name": "coverage",
+      "configurePreset": "coverage"
+    },
+    {
+      "name": "fuzz",
+      "configurePreset": "fuzz"
     }
   ],
   "testPresets": [
@@ -48,6 +86,20 @@
     {
       "name": "sanitize",
       "configurePreset": "sanitize",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "coverage",
+      "configurePreset": "coverage",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "fuzz",
+      "configurePreset": "fuzz",
       "output": {
         "outputOnFailure": true
       }

@@ -9,6 +9,8 @@ jobs:
   cpp:
     name: C++ / ${{ matrix.preset }}
     runs-on: ubuntu-24.04
+    env:
+      UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
     strategy:
       matrix:
         preset: [release, sanitize]
@@ -36,3 +38,50 @@ jobs:
       - run: python -m pytest -q reference/python/tests reference/python/migration
         env:
           SLIP_BIN: ${{ github.workspace }}/build/release/slip
+
+  coverage:
+    name: GCC source coverage
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y cmake libpcre2-dev verilator
+      - run: cmake --preset coverage
+      - run: cmake --build --preset coverage --parallel 2
+      - run: ctest --preset coverage --parallel 2
+      - run: cmake --build --preset coverage --target coverage_report
+      - run: cat build/coverage/coverage/report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gcc-coverage
+          path: |
+            build/coverage/coverage/
+            build/coverage/Testing/Temporary/LastTest.log
+
+  fuzz:
+    name: Clang ASan / UBSan / libFuzzer
+    runs-on: ubuntu-24.04
+    env:
+      UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y cmake clang libpcre2-dev
+      - run: cmake --preset fuzz -DCMAKE_CXX_COMPILER=clang++ -DSLIP_LIBFUZZER=ON
+      - run: cmake --build --preset fuzz --parallel 2
+      - run: ctest --preset fuzz -R compiler.fuzz --output-on-failure
+      - name: Coverage-guided mutations
+        shell: bash
+        run: |
+          mkdir -p build/fuzz/corpus build/fuzz/artifacts
+          cp tests/fuzz/corpus/* build/fuzz/corpus/
+          build/fuzz/slip_fuzzer build/fuzz/corpus -dict=tests/fuzz/slip.dict -max_len=8192 -max_total_time=60 -timeout=10 -rss_limit_mb=2048 -artifact_prefix=build/fuzz/artifacts/ 2>&1 | tee build/fuzz/fuzzer.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fuzz-corpus-and-results
+          path: |
+            build/fuzz/corpus/
+            build/fuzz/artifacts/
+            build/fuzz/fuzzer.log
+            build/fuzz/tests/fuzz/fuzz-last-input
+            build/fuzz/Testing/Temporary/LastTest.log

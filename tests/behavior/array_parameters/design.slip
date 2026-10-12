@@ -1,0 +1,14 @@
+module delay #(param WIDTH=8,param DEPTH=3)(clk,rst_n,enable,din,dout) {
+    logic clk; logic rst_n; logic enable;
+    logic [WIDTH-1:0] din; logic [WIDTH-1:0] dout;
+    logic [WIDTH-1:0] stages[0:DEPTH-1];
+    seq(clk,neg:rst_n) {
+        if(!rst_n) {
+            for(i=0;i<DEPTH;i=i+1) { stages[i]=0; }
+        } else if(enable) {
+            stages[0]=din;
+            for(i=1;i<DEPTH;i=i+1) { stages[i]=stages[i-1]; }
+        }
+    }
+    assign dout=stages[DEPTH-1];
+}

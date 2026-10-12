@@ -1,0 +1,28 @@
+module controller(clk,rst_n,start,ack,busy,done,phase) {
+    logic clk; logic rst_n; logic start; logic ack;
+    logic busy; logic done; logic [1:0] phase;
+    logic [1:0] state;
+    logic [3:0] remaining;
+    seq(clk,neg:rst_n) {
+        if(!rst_n) {
+            state=0;
+            remaining=0;
+        } else {
+            case(state) {
+                0: if(start) { state=1; remaining=3; }
+                1: if(remaining==0) { state=2; } else { remaining=remaining-1; }
+                2: if(ack) { state=0; }
+                default: state=0;
+            }
+        }
+    }
+    comb {
+        busy=0; done=0;
+        case(state) {
+            1: busy=1;
+            2: done=1;
+            default: { }
+        }
+    }
+    assign phase=state;
+}

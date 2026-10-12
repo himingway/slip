@@ -1,0 +1,22 @@
+module combo #(param W=8)(a,b,sel,sum,shifted,less,parity,muxed) {
+    signed logic [W-1:0] a;
+    signed logic [W-1:0] b;
+    logic [1:0] sel;
+    logic [W:0] sum;
+    signed logic [W-1:0] shifted;
+    logic less;
+    logic parity;
+    logic [W-1:0] muxed;
+    assign sum=unsigned'(a)+unsigned'(b);
+    assign shifted=a >>> sel;
+    assign less=a<b;
+    assign parity=^a;
+    comb {
+        case(sel) {
+            0: muxed=a;
+            1: muxed=b;
+            2: muxed=a^b;
+            default: muxed=~a;
+        }
+    }
+}

@@ -1,0 +1,2 @@
+module leaf #(param W=8)(a,y) { logic [W-1:0] a; logic [W-1:0] y; assign y=a; }
+module m(a,y) { leaf #(.W(16)) u {.a,.y}; }

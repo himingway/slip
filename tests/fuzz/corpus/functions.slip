@@ -1,0 +1,4 @@
+defun f(s):
+    return s.upper() if len(s)>0 else "empty"
+module leaf(p_x) { logic p_x; }
+module m { leaf u { "p_(.*)" => "v_$f(\1)" }; }

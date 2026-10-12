@@ -78,13 +78,16 @@ width warnings and annotates implicit / inferred declarations.
 
 ## Tests and repository layout
 
-The default CMake/CTest build uses only C++ and CMake tests. CTest covers the
-compiler API, concurrent compilations, all shared `.slip` fixtures, CLI exit
-codes and JSON diagnostics, failure preserving existing output, and operation
-with an empty PATH. If Verilator is installed, it also compiles and simulates
-`tests/behavior/design.slip` against independent reference RTL for 128 cycles,
-including resets, wrapper width propagation and context-dependent arithmetic.
-CI installs Verilator and runs Release and ASan/UBSan builds.
+The default CMake/CTest build uses only C++ and CMake tests. Independent named
+regressions cover AST precedence, widths and signedness, parameter scope,
+overlapping drivers, diagnostic locations, integer boundaries, resource limits,
+object ownership and concurrent compilations with different functions and IP.
+CTest also covers all shared `.slip` fixtures and CLI behavior. With Verilator,
+four simulations cover pipeline arithmetic, combinational logic, a state machine,
+and arrays with different widths and depths. Their expected behavior is defined
+in independent RTL or testbench models, without the Python implementation.
+CI runs Release, ASan/UBSan, GCC coverage and Clang libFuzzer jobs.
+See [testing and coverage](testing.md) for commands, report scope and fuzz replay.
 
 ```sh
 ctest --preset release

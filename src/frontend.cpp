@@ -204,6 +204,7 @@ class Parser {
     std::vector<Token> tokens;
     std::size_t pos = 0;
     unsigned nesting = 0;
+    bool function_context = false;
     struct Depth {
         unsigned& value;
         explicit Depth(unsigned& value, const Location& loc) : value(value) {
@@ -404,6 +405,11 @@ public:
         auto left = primary();
         while (true) {
             auto tok = peek();
+            if (function_context && tok.text == "if" && min_precedence == 1) {
+                take(); auto condition = expr(2); expect("else");
+                left = expression(tok.loc, Ternary{condition, left, expr()});
+                continue;
+            }
             if (tok.text == "[" && min_precedence <= 14) {
                 take(); ExprPtr first, last;
                 if (peek().text != ":") first = expr();
@@ -447,10 +453,12 @@ public:
                 expect("(");
                 if (!eat(")")) { do { function.parameters.push_back(name().text); } while (eat(",")); expect(")"); }
                 expect(":");
+                function_context = true;
                 while (peek().kind != TokenKind::end && peek().loc.column > tok.loc.column) {
                     expect("return"); auto value = expr(); eat(";");
                     if (!function.result) function.result = value;
                 }
+                function_context = false;
                 if (!function.result) throw Error(tok.loc, "E_FUNCTION", "function has no return statement");
                 result.functions.push_back(std::move(function)); continue;
             }

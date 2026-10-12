@@ -16,6 +16,12 @@ Integer negate(Integer a) {
     if (a == std::numeric_limits<Integer>::min()) throw Error({}, "E_LIMIT", "defun integer overflow");
     return -a;
 }
+Integer subtract(Integer a, Integer b) {
+    if ((b > 0 && a < std::numeric_limits<Integer>::min() + b) ||
+        (b < 0 && a > std::numeric_limits<Integer>::max() + b))
+        throw Error({}, "E_LIMIT", "defun integer overflow");
+    return a - b;
+}
 Integer multiply(Integer a, Integer b) {
     if (!a || !b) return 0;
     if ((a == -1 && b == std::numeric_limits<Integer>::min()) || (b == -1 && a == std::numeric_limits<Integer>::min())) throw Error({}, "E_LIMIT", "defun integer overflow");
@@ -30,11 +36,19 @@ Integer divide(Integer a, Integer b) {
     if (a % b && ((a < 0) != (b < 0))) --q;
     return q;
 }
+Integer remainder(Integer a, Integer b) {
+    if (!b) throw Error({}, "E_FUNCTION", "division by zero");
+    // C++ min % -1 is undefined even though the mathematical remainder is zero.
+    if (b == -1) return 0;
+    auto result = a % b;
+    return result && ((result < 0) != (b < 0)) ? add(result, b) : result;
+}
 Integer numeric(std::string_view text) {
     auto source = trim(text);
     if (source.starts_with('+')) source.erase(0, 1);
     Integer result{};
     auto [end, error] = std::from_chars(source.data(), source.data() + source.size(), result);
+    if (error == std::errc::result_out_of_range) throw Error({}, "E_LIMIT", "defun integer exceeds signed 64-bit range");
     if (error != std::errc{} || end != source.data() + source.size()) throw Error({}, "E_FUNCTION", "expected decimal integer: " + source);
     return result;
 }
@@ -42,12 +56,27 @@ std::size_t slice_index(Integer value, std::size_t length) {
     if (value < 0) value = std::max<Integer>(0, value + static_cast<Integer>(length));
     return static_cast<std::size_t>(std::min<Integer>(value, static_cast<Integer>(length)));
 }
+void append_bounded(std::string& output, std::string_view value) {
+    if (value.size() > 1000000 || output.size() > 1000000 - value.size())
+        throw Error({}, "E_LIMIT", "defun string size limit exceeded");
+    output.append(value);
+}
+std::string join_bounded(const std::vector<std::string>& values, std::string_view separator) {
+    std::string output;
+    bool first = true;
+    for (const auto& value : values) {
+        if (!first) append_bounded(output, separator);
+        append_bounded(output, value);
+        first = false;
+    }
+    return output;
+}
 std::string replace_all(std::string input, const std::string& old, const std::string& replacement, Integer count = -1) {
     std::string result;
     Integer replaced = 0;
     for (std::size_t pos = 0; pos <= input.size();) {
         if ((count < 0 || replaced < count) && input.compare(pos, old.size(), old) == 0) {
-            result += replacement; ++replaced;
+            append_bounded(result, replacement); ++replaced;
             if (!old.empty()) { pos += old.size(); continue; }
         }
         if (pos == input.size()) break;
@@ -77,7 +106,7 @@ std::string Functions::text(const Value& value) {
     if (auto boolean = std::get_if<bool>(&value)) return *boolean ? "True" : "False";
     if (auto number = std::get_if<Integer>(&value)) return std::to_string(*number);
     if (auto string = std::get_if<std::string>(&value)) return *string;
-    return join(std::get<std::vector<std::string>>(value), ", ");
+    return join_bounded(std::get<std::vector<std::string>>(value), ", ");
 }
 Integer Functions::integer(const Value& value) {
     if (auto boolean = std::get_if<bool>(&value)) return *boolean ? 1 : 0;
@@ -94,7 +123,7 @@ bool Functions::truth(const Value& value) {
 Functions::Value Functions::eval(const ExprPtr& expr, const std::map<std::string, Value>& env, unsigned depth) {
     if (depth > 64) throw Error(expr->loc, "E_LIMIT", "defun evaluation depth exceeded");
     auto run = [&](const ExprPtr& value) { return eval(value, env, depth + 1); };
-    return std::visit(Overloaded{
+    try { return std::visit(Overloaded{
         [&](const Literal& node) -> Value { return node.string ? Value{unquote(node.text)} : Value{numeric(node.text)}; },
         [&](const Identifier& node) -> Value {
             auto found = env.find(node.name);
@@ -120,8 +149,11 @@ Functions::Value Functions::eval(const ExprPtr& expr, const std::map<std::string
                 if (text(a).size() + text(b).size() > 1000000) throw Error(expr->loc, "E_LIMIT", "defun string size limit exceeded");
                 return text(a) + text(b);
             }
-            if (node.op == "==" || node.op == "===") return a == b;
-            if (node.op == "!=" || node.op == "!==") return a != b;
+            if (node.op == "==" || node.op == "===" || node.op == "!=" || node.op == "!==") {
+                const auto number = [](const Value& v) { return std::holds_alternative<Integer>(v) || std::holds_alternative<bool>(v); };
+                const bool equal = number(a) && number(b) ? integer(a) == integer(b) : a == b;
+                return node.op == "!=" || node.op == "!==" ? !equal : equal;
+            }
             if (node.op == "&&") return truth(b);
             if (node.op == "||") return truth(b);
             if (std::holds_alternative<std::string>(a) && std::holds_alternative<std::string>(b)) {
@@ -132,10 +164,10 @@ Functions::Value Functions::eval(const ExprPtr& expr, const std::map<std::string
             }
             auto x = integer(a), y = integer(b);
             if (node.op == "+") return add(x, y);
-            if (node.op == "-") return add(x, negate(y));
+            if (node.op == "-") return subtract(x, y);
             if (node.op == "*") return multiply(x, y);
             if (node.op == "/") return divide(x, y);
-            if (node.op == "%") { divide(x, y); auto r = x % y; return r && ((r < 0) != (y < 0)) ? add(r, y) : r; }
+            if (node.op == "%") return remainder(x, y);
             if (node.op == "&") return x & y;
             if (node.op == "|") return x | y;
             if (node.op == "^") return x ^ y;
@@ -182,7 +214,12 @@ Functions::Value Functions::eval(const ExprPtr& expr, const std::map<std::string
             return text(value).substr(index, 1);
         },
         [&](const auto&) -> Value { throw Error(expr->loc, "E_FUNCTION", "unsupported expression in defun"); }
-    }, expr->node);
+    }, expr->node); }
+    catch (const Error& error) {
+        if (error.location.file == "<input>" && error.location.line == 1 && error.location.column == 1)
+            throw Error(expr->loc, error.code, error.message);
+        throw;
+    }
 }
 
 Functions::Value Functions::call(const std::string& name, const std::vector<Value>& args, unsigned depth, Location loc) {
@@ -209,12 +246,12 @@ Functions::Value Functions::call(const std::string& name, const std::vector<Valu
     if (name == "add" || name == "sub" || name == "mul" || name == "div" || name == "mod") {
         count(2); auto x = integer(args[0]), y = integer(args[1]);
         if (name == "add") return std::to_string(add(x, y));
-        if (name == "sub") return std::to_string(add(x, negate(y)));
+        if (name == "sub") return std::to_string(subtract(x, y));
         if (name == "mul") return std::to_string(multiply(x, y));
         if (name == "div") return std::to_string(divide(x, y));
-        divide(x, y); auto r = x % y; return std::to_string(r && ((r < 0) != (y < 0)) ? add(r, y) : r);
+        return std::to_string(remainder(x, y));
     }
-    if (name == "concat") { count(2); return text(args[0]) + text(args[1]); }
+    if (name == "concat") { count(2); auto result = text(args[0]); append_bounded(result, text(args[1])); return result; }
     if (name == "substr" || name == "bit_select") {
         count(3); auto source = text(args[0]); auto first = integer(args[1]), last = integer(args[2]);
         if (name == "bit_select") { if (first < last || first < 0 || first >= static_cast<Integer>(source.size())) throw Error(loc, "E_FUNCTION", "bit_select out of range"); std::swap(first, last); ++last; }
@@ -328,7 +365,18 @@ Functions::Value Functions::method(const std::string& name, const Value& object,
         }
         return parts;
     }
-    if (name == "join") { count(1, 1); if (auto list = std::get_if<std::vector<std::string>>(&args[0])) return join(*list, value); std::vector<std::string> chars; for (char ch : text(args[0])) chars.emplace_back(1, ch); return join(chars, value); }
+    if (name == "join") {
+        count(1, 1);
+        if (auto list = std::get_if<std::vector<std::string>>(&args[0])) return join_bounded(*list, value);
+        std::string result;
+        bool first = true;
+        for (char ch : text(args[0])) {
+            if (!first) append_bounded(result, value);
+            append_bounded(result, std::string_view(&ch, 1));
+            first = false;
+        }
+        return result;
+    }
     if (name == "isdigit" || name == "isnumeric" || name == "isalpha" || name == "isalnum" || name == "islower" || name == "isupper") {
         count(0, 0); bool okay = !value.empty(), cased = false;
         for (unsigned char ch : value) {
