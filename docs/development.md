@@ -5,9 +5,7 @@ parser, metaprogram expander, semantic analysis, interface resolution and SV
 emitter run without Python. It links directly to slang for IP reflection,
 SystemVerilog constant evaluation and whole-design elaboration.
 
-The Python implementation lives in `reference/python/` as a migration oracle.
-It has a separate package, dependencies, tests and `slip-reference` CLI;
-the C++ build does not inspect or import it. The CLI keeps `build`, `check`, `-o`, `-ip`, `-f`, and `--strict`.
+The Python implementation is maintained on the [`python-reference` branch](https://github.com/himingway/slip/tree/python-reference). The CLI keeps `build`, `check`, `-o`, `-ip`, `-f`, and `--strict`.
 Native additions are stdin input (`-`), `build --stdout`, and
 `--diagnostics=json`. Exit codes are 0 for success, 1 for compilation failure,
 and 2 for invalid arguments. Diagnostics use stable codes such as `E_PARSE`,
@@ -98,32 +96,11 @@ build/install/bin/slip check tests/fixtures/simple.slip
 - `include/slip/`: public C++ AST, IR and compiler API.
 - `src/`: C++ implementation and CLI.
 - `tests/`: C++ API tests, CMake CLI/simulation tests and shared HDL fixtures.
-- `reference/python/`: Python oracle, its own package and regression suite.
 - `docs/`: current language specification and C++ user/developer documentation.
 
 The C++ `slip::core` build target exposes the reusable compiler API.
 Installation currently publishes the CLI executable. Python is needed only
-when generating slang headers from source or running the reference suite.
-
-For optional migration comparison, see [the Python reference](../reference/python/README.md):
-
-```sh
-uv sync --directory reference/python
-uv run --directory reference/python pytest -q tests
-SLIP_BIN="$PWD/build/release/slip" uv run --directory reference/python pytest -q migration
-```
-
-The migration suite extracts complete literal programs from the reference
-Python tests and includes the shared behavioral source. Successful programs
-compare generated SV syntax trees, ignoring trivia, redundant parentheses and
-ordering of independent module declarations / ports. Rejected programs must
-also fail in C++. Shared project fixtures are compared. The same independent
-Verilator simulation is exercised through the reference test adapter.
-
-One intentional semantic correction is covered separately: a runtime `for`
-variable stays inside its procedural scope and is not exported as an implicit
-module input. It is removed from the Python oracle's expected implicit interface
-for that comparison; all other generated syntax is compared.
+when generating slang headers from source.
 
 ## Bounds and compatibility
 

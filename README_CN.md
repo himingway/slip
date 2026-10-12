@@ -12,7 +12,7 @@
 
 Slip 是一种简洁的硬件描述语言，本质上是 SystemVerilog 的语法糖。它为常见的硬件设计模式提供了精简的语法——信号声明、组合与时序逻辑、带有正则端口映射的模块实例化、编译时元编程——同时生成干净、可读的 SystemVerilog 输出。
 
-Slip 的主实现是 C++20 编译器，直接链接 [slang](https://github.com/MikePopoloski/slang) 完成常量求值、IP 反射及完整设计校验。Python 仅保留为 [reference](reference/python/README.md)，不参与主程序运行。架构与兼容边界见 [开发说明](docs/development.md)。
+Slip 的主实现是 C++20 编译器，直接链接 [slang](https://github.com/MikePopoloski/slang) 完成常量求值、IP 反射及完整设计校验。Python 实现保留在 [`python-reference` 分支](https://github.com/himingway/slip/tree/python-reference)。架构与兼容边界见 [开发说明](docs/development.md)。
 
 ## 特性
 
@@ -307,8 +307,6 @@ cmake --install build/release --prefix "$HOME/.local"
 
 确保 `$HOME/.local/bin` 在 `PATH` 中，之后 `slip` 即为 C++ 主程序。
 
-Python 对照实现的安装和测试方法见 [reference/python/README.md](reference/python/README.md)。
-
 ## 使用方法
 
 ### 编译
@@ -379,7 +377,7 @@ Slip 支持 VCS 格式的 filelist（`.f`）文件：
                                        SystemVerilog (.sv)
 ```
 
-主实现位于 `src/` 和 `include/slip/`；C++ 测试及共享 HDL 用例位于 `tests/`；Python 对照实现独立放在 `reference/python/`。
+主实现位于 `src/` 和 `include/slip/`；C++ 测试及共享 HDL 用例位于 `tests/`。Python 实现保留在 [`python-reference` 分支](https://github.com/himingway/slip/tree/python-reference)。
 
 1. **词法分析** — 识别 token、复合运算符、注释与模板标识符
 2. **语法分析** — 语句使用递归下降，表达式使用 Pratt 解析器
@@ -395,7 +393,7 @@ cmake --build --preset sanitize --parallel 2
 ctest --preset sanitize
 ```
 
-安装 Verilator 后，CTest 会加入与独立参考 RTL 比较的 128 周期仿真。Python 回归和迁移对照测试单独运行，见 [reference](reference/python/README.md)。
+安装 Verilator 后，CTest 会加入与独立参考 RTL 比较的 128 周期仿真。
 
 ## 许可证
 

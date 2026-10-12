@@ -12,7 +12,7 @@ English | **[中文](README_CN.md)** | **[User Manual (PDF)](docs/tex/user-manua
 
 Slip is a compact hardware description language designed as syntactic sugar over SystemVerilog. It provides a streamlined syntax for common hardware design patterns — signal declarations, combinational and sequential logic, module instantiation with regex port mapping, and compile-time metaprogramming — while generating clean, human-readable SystemVerilog output.
 
-Slip is a C++20 compiler that links directly to [slang](https://github.com/MikePopoloski/slang) for constant evaluation, IP reflection and whole-design validation. Python is retained only as a [reference implementation](reference/python/README.md). See [compiler design and compatibility](docs/development.md).
+Slip is a C++20 compiler that links directly to [slang](https://github.com/MikePopoloski/slang) for constant evaluation, IP reflection and whole-design validation. The Python implementation is maintained on the [`python-reference` branch](https://github.com/himingway/slip/tree/python-reference). See [compiler design and compatibility](docs/development.md).
 
 ## Features
 
@@ -298,7 +298,7 @@ ctest --preset release
 build/release/slip check tests/fixtures/simple.slip
 ```
 
-See [docs/development.md](docs/development.md) for offline builds, sanitizers, compatibility limits and migration validation.
+See [docs/development.md](docs/development.md) for offline builds, sanitizers and compatibility limits.
 
 Install the CLI:
 
@@ -307,8 +307,6 @@ cmake --install build/release --prefix "$HOME/.local"
 ```
 
 With `$HOME/.local/bin` on `PATH`, `slip` runs the C++ compiler.
-
-The optional Python oracle has [separate installation and test instructions](reference/python/README.md).
 
 ## Usage
 
@@ -380,7 +378,7 @@ Source (.slip)
                                        SystemVerilog (.sv)
 ```
 
-The C++ implementation lives in `src/` and `include/slip/`; its tests and shared HDL fixtures live in `tests/`. The Python oracle is isolated in `reference/python/`.
+The C++ implementation lives in `src/` and `include/slip/`; its tests and shared HDL fixtures live in `tests/`. The Python implementation is maintained on the [`python-reference` branch](https://github.com/himingway/slip/tree/python-reference).
 
 1. **Lexer** — tokenization with compound operators, comments and template identifiers
 2. **Parser** — recursive-descent for statements, Pratt parser for expressions
@@ -396,7 +394,7 @@ cmake --build --preset sanitize --parallel 2
 ctest --preset sanitize
 ```
 
-With Verilator installed, CTest also runs four independent simulations covering pipeline arithmetic, combinational logic, state machines, and parameterized arrays. See [testing and coverage](docs/testing.md) for independent regressions, sanitizer checks, coverage reports and fuzzing. Python regression and migration comparison tests run separately; see [reference](reference/python/README.md).
+With Verilator installed, CTest also runs four independent simulations covering pipeline arithmetic, combinational logic, state machines, and parameterized arrays. See [testing and coverage](docs/testing.md) for independent regressions, sanitizer checks, coverage reports and fuzzing.
 
 ## License
 

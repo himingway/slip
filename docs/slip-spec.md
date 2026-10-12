@@ -29,7 +29,7 @@ Slip 是一个极简硬件描述语言 (DSL) 编译器。它定义了一组高�
 * 正则映射：PCRE2；`defun` 由受限的 C++ 类型解释器执行。
 * 构建和测试：CMake、CTest；硬件行为测试使用 Verilator。
 
-Python 实现位于 `reference/python/`，只用于回归和迁移对照。构建说明和兼容边界见 [development.md](development.md)。
+Python 实现保留在 [`python-reference` 分支](https://github.com/himingway/slip/tree/python-reference)。构建说明和兼容边界见 [development.md](development.md)。
 
 ---
 
@@ -250,8 +250,7 @@ Expr ::= (* 表达式：由 Pratt 解析器实现，涵盖所有运算符。
 * `IRInstance`：目标模块、实例名、源码位置、参数和端口连接。
 * 过程和赋值保留类型化表达式；硬件表达式在输出前保留 SV 位宽和四态语义。
 
-定义见 `include/slip/ir.hpp`。Python 参考实现的数据类说明保存在
-`reference/python/docs/python-design.md`。
+定义见 `include/slip/ir.hpp`。
 
 ### 7.2 语义分析流程
 
@@ -495,4 +494,4 @@ slip check [-ip <ip_dirs>] [-f <filelists>] <file.slip>
 
 `--strict` 要求显式信号/端口声明，并将赋值及端口位宽不匹配提升为错误。默认模式保留隐式信号功能。校验失败时不写出任何新文件。
 
-默认 `ctest --preset release` 运行 C++ API、共享用例和 CLI 测试；安装 Verilator 后还运行独立参考 RTL 仿真。Python 回归和迁移比较在 `reference/python/` 中单独运行。
+默认 `ctest --preset release` 运行 C++ API、共享用例和 CLI 测试；安装 Verilator 后还运行独立参考 RTL 仿真。
