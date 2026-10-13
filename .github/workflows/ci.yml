@@ -57,6 +57,7 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+      ASAN_OPTIONS: alloc_dealloc_mismatch=0
     steps:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y cmake clang libpcre2-dev

@@ -419,7 +419,7 @@ public:
             }
             if (tok.text == "(" && min_precedence <= 14) {
                 auto id = std::get_if<Identifier>(&left->node);
-                if (!id) throw Error(tok.loc, "E_PARSE", "function call requires an identifier");
+                if (!id || id->meta) throw Error(tok.loc, "E_PARSE", "function call requires an identifier");
                 left = expression(tok.loc, Call{id->name, args()}); continue;
             }
             if (tok.text == "." && min_precedence <= 14) {
@@ -493,7 +493,7 @@ std::string serialize(const ExprPtr& expr, int context) {
         std::vector<std::string> text; for (const auto& value : values) text.push_back(sv(value)); return join(text, ", ");
     };
     auto text = std::visit(Overloaded{
-        [](const Identifier& node) { return node.name; },
+        [](const Identifier& node) { return (node.meta ? "`" : "") + node.name; },
         [](const Literal& node) { return node.text; },
         [&](const Unary& node) { return node.op + sv(node.operand, 13); },
         [&](const Binary& node) { return sv(node.left, precedence(node.op)) + " " + node.op + " " + sv(node.right, precedence(node.op) + 1); },

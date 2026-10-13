@@ -87,3 +87,18 @@ TEST_CASE(expression_rejects_trailing_tokens) {
     test::error([] { slip::parse_expression("a b", "expr.slip"); }, "E_PARSE", "trailing");
     test::error([] { slip::parse_expression("{}", "expr.slip"); }, "E_PARSE", "empty concatenation");
 }
+TEST_CASE(meta_identifier_roundtrips_through_to_sv_and_rejects_calls) {
+    auto ast = slip::parse_expression("`module");
+    CHECK(slip::to_sv(ast) == "`module");
+    auto reparsed = slip::parse_expression(slip::to_sv(ast));
+    CHECK(slip::to_sv(reparsed) == "`module");
+    auto id = std::get<slip::Identifier>(reparsed->node);
+    CHECK(id.meta);
+    CHECK(id.name == "module");
+
+    auto loop_var = slip::parse_expression("`i");
+    CHECK(slip::to_sv(loop_var) == "`i");
+    CHECK(slip::to_sv(slip::parse_expression(slip::to_sv(loop_var))) == "`i");
+
+    test::error([] { slip::parse_expression("`f(1)", "expr.slip"); }, "E_PARSE", "function call requires an identifier");
+}
