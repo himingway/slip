@@ -1,0 +1,102 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Release tag name (e.g. v0.2.0, leave empty to read from CMakeLists.txt)'
+        required: false
+        type: string
+        default: ''
+      draft:
+        description: 'Publish as draft release'
+        required: false
+        type: boolean
+        default: false
+      prerelease:
+        description: 'Publish as prerelease'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    name: Build & Publish Release
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake libpcre2-dev verilator
+
+      - name: Determine release tag
+        id: vars
+        shell: bash
+        run: |
+          if [ -n "${{ github.event.inputs.tag_name }}" ]; then
+            TAG="${{ github.event.inputs.tag_name }}"
+          elif [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+          else
+            VER=$(sed -n 's/.*project(slip VERSION \([^ ]*\).*/\1/p' CMakeLists.txt)
+            TAG="v${VER}"
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "Release tag: ${TAG}"
+
+      - name: Configure Release build
+        run: cmake --preset release
+
+      - name: Build Release binary
+        run: cmake --build --preset release --parallel 2
+
+      - name: Run test suite
+        run: ctest --preset release --output-on-failure
+
+      - name: Install binary to staging directory
+        run: cmake --install build/release --prefix "$RUNNER_TEMP/slip"
+
+      - name: Smoke test installed binary
+        run: |
+          "$RUNNER_TEMP/slip/bin/slip" --version
+          "$RUNNER_TEMP/slip/bin/slip" check tests/fixtures/simple.slip
+
+      - name: Package release archive
+        id: package
+        shell: bash
+        run: |
+          TAG="${{ steps.vars.outputs.tag }}"
+          DIST_NAME="slip-${TAG}-linux-x86_64"
+          DIST_DIR="$RUNNER_TEMP/${DIST_NAME}"
+          mkdir -p "${DIST_DIR}/bin"
+
+          cp "$RUNNER_TEMP/slip/bin/slip" "${DIST_DIR}/bin/"
+          strip "${DIST_DIR}/bin/slip"
+          cp LICENSE README.md "${DIST_DIR}/"
+
+          tar -czvf "${DIST_NAME}.tar.gz" -C "$RUNNER_TEMP" "${DIST_NAME}"
+          sha256sum "${DIST_NAME}.tar.gz" > "${DIST_NAME}.tar.gz.sha256"
+          sha256sum "${DIST_NAME}.tar.gz" > SHA256SUMS.txt
+
+          echo "archive=${DIST_NAME}.tar.gz" >> "$GITHUB_OUTPUT"
+          echo "sha256=${DIST_NAME}.tar.gz.sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.vars.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: Slip ${{ steps.vars.outputs.tag }}
+          generate_release_notes: true
+          draft: ${{ github.event.inputs.draft == 'true' }}
+          prerelease: ${{ github.event.inputs.prerelease == 'true' }}
+          files: |
+            ${{ steps.package.outputs.archive }}
+            ${{ steps.package.outputs.sha256 }}
+            SHA256SUMS.txt
