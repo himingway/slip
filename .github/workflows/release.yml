@@ -4,10 +4,11 @@ on:
   push:
     tags:
       - 'v*'
+      - '[0-9]+*'
   workflow_dispatch:
     inputs:
       tag_name:
-        description: 'Release tag name (e.g. v0.2.0, leave empty to read from CMakeLists.txt)'
+        description: 'Release tag name (leave empty to use current date, e.g. vYYYY.MM.DD)'
         required: false
         type: string
         default: ''
@@ -31,6 +32,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y cmake libpcre2-dev verilator
@@ -44,8 +47,18 @@ jobs:
           elif [[ "$GITHUB_REF" == refs/tags/* ]]; then
             TAG="${GITHUB_REF#refs/tags/}"
           else
-            VER=$(sed -n 's/.*project(slip VERSION \([^ ]*\).*/\1/p' CMakeLists.txt)
-            TAG="v${VER}"
+            # Date-based tag (CalVer: vYYYY.MM.DD)
+            DATE_TAG="v$(date +'%Y.%m.%d')"
+            git fetch --tags --force 2>/dev/null || true
+            if git rev-parse "$DATE_TAG" >/dev/null 2>&1; then
+              COUNT=1
+              while git rev-parse "${DATE_TAG}.${COUNT}" >/dev/null 2>&1; do
+                COUNT=$((COUNT + 1))
+              done
+              TAG="${DATE_TAG}.${COUNT}"
+            else
+              TAG="$DATE_TAG"
+            fi
           fi
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "Release tag: ${TAG}"
