@@ -1,3 +1,5 @@
+cmake_minimum_required(VERSION 3.24)
+
 file(MAKE_DIRECTORY "${WORK_DIR}")
 file(WRITE "${WORK_DIR}/valid.slip" "module m(a,y) { logic a; logic y; assign y=a; }\n")
 execute_process(COMMAND "${SLIP_BIN}" build "${WORK_DIR}/valid.slip" --strict -o "${WORK_DIR}/rtl"

@@ -1,3 +1,5 @@
+cmake_minimum_required(VERSION 3.24)
+
 file(MAKE_DIRECTORY "${WORK_DIR}")
 execute_process(COMMAND "${SLIP_BIN}" build "${SOURCE_DIR}/design.slip" -o "${WORK_DIR}/rtl"
     RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE errors TIMEOUT 15)

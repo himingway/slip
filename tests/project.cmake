@@ -1,3 +1,5 @@
+cmake_minimum_required(VERSION 3.24)
+
 file(MAKE_DIRECTORY "${WORK_DIR}")
 set(project "${WORK_DIR}/project with spaces")
 set(outside "${WORK_DIR}/outside")

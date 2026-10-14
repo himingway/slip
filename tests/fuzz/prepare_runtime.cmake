@@ -1,3 +1,5 @@
+cmake_minimum_required(VERSION 3.24)
+
 # Optional ELF runtime workaround: keep libFuzzer's allocator definitions local
 # to its own object, leaving ASan's global new/delete interceptors intact.
 if(NOT DEFINED ENGINE OR NOT EXISTS "${ENGINE}" OR NOT DEFINED OUTPUT)

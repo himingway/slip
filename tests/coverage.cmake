@@ -1,3 +1,5 @@
+cmake_minimum_required(VERSION 3.24)
+
 function(percent hit total output)
     if(total EQUAL 0)
         set(${output} "n/a" PARENT_SCOPE)
