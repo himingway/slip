@@ -20,7 +20,9 @@
 % ── Slip language definition ──
 \lstdefinelanguage{Slip}{
   keywords={module,param,localparam,logic,signed,assign,seq,comb,initial,
-            pos,neg,if,else,for,case,casez,casex,default,inside,begin,end,include},
+            pos,neg,if,else,for,case,casez,casex,default,inside,begin,end,include,
+            defun,return,typedef,enum,struct,packed,bit,int,input,output,inout,
+            function,automatic,assert,static_assert,bundle,master,slave,bus,interface},
   sensitive=true,
   morecomment=[l]{//},
   morecomment=[s]{/*}{*/},
@@ -38,7 +40,8 @@
             always_ff,always_comb,always_latch,begin,end,
             if,else,for,parameter,localparam,assign,
             posedge,negedge,generate,endgenerate,genvar,
-            case,endcase,default,initial,integer},
+            case,endcase,default,initial,integer,int,bit,typedef,enum,struct,packed,
+            function,endfunction,automatic,return,assert,interface,endinterface,modport},
   sensitive=true,
   morecomment=[l]{//},
   morecomment=[s]{/*}{*/},
@@ -74,13 +77,14 @@
 % ── Disable first-line indent (English typesetting) ──
 \setlength{\parindent}{0pt}
 \setlength{\parskip}{6pt}
+\setlength{\emergencystretch}{3em}
 
 % ── Title metadata ──
 \title{Slip User Manual}
 \subtitle{A Minimal HDL DSL Compiler}
 \author{Slip Project}
-\date{May 2026}
-\version{1.0}
+\date{October 15, 2026}
+\version{1.1}
 
 \begin{document}
 
@@ -101,7 +105,7 @@ Slip is a minimal hardware description language (DSL) that compiles \code{.slip}
 
 \begin{itemize}
   \item \textbf{Minimal syntax} --- port directions, signal types, and instance wiring are inferred from context.
-  \item \textbf{Direct mapping} --- every Slip construct maps 1:1 to a SystemVerilog equivalent.
+  \item \textbf{Readable output} --- RTL maps to SystemVerilog constructs; metaprograms and bundles expand into ordinary RTL, while native interfaces retain their SV form.
   \item \textbf{Compile-time metaprogramming} --- \slipinline{`for} loops and \slipinline{`if} conditionals are fully expanded before code generation, with SystemVerilog constant evaluation.
   \item \textbf{Validated output} --- generated SystemVerilog is checked against the IEEE 1800-2017 standard via \href{https://github.com/MikePopoloski/slang}{slang}.
 \end{itemize}
@@ -166,13 +170,76 @@ Runs the full compilation pipeline but discards the output. Generated modules an
 
 Use \code{--strict} with either command in CI to require explicit signal and port declarations and reject assignment or port width mismatches. Default mode continues to support annotated implicit signals.
 
+\section{Project Configuration}
+
+With no input argument, the CLI reads \code{slip.conf} from the current directory.
+It does not search parent directories. For example:
+
+\begin{lstlisting}
+entry = rtl/top.slip
+out_dir = build/rtl
+filelist = ip.f
+ip_dir = "external ip"
+strict = true
+\end{lstlisting}
+
+\begin{lstlisting}[language=bash]
+slip build
+slip check --project examples/native-interface/slip.conf
+slip inspect --project examples/native-interface/slip.conf --format=json
+\end{lstlisting}
+
+The format is one \code{key = value} per line, with \code{\#} comments and
+unquoted, single-quoted or double-quoted paths. A path containing \code{\#}
+must be quoted. Double quotes allow escaped quotes and backslashes; single quotes
+preserve backslashes literally. Configuration paths are relative to the file's
+directory. The default output is its \code{build} subdirectory.
+
+Supported keys are \code{entry}, \code{out\_dir}, \code{filelist}, \code{ip\_dir},
+\code{strict}, \code{no\_implicit} and \code{widths\_as\_errors}. Boolean values
+are \code{true} or \code{false}. Only \code{filelist} and \code{ip\_dir} may repeat;
+unknown keys, repeated scalar keys and invalid values report \code{E\_CONFIG}.
+Without \code{entry}, supply the input on the command line.
+
+Explicit input files do not load configuration unless \code{--project} is given.
+CLI input and \code{-o} override configuration; \code{-ip} and \code{-f} append to
+the configured lists. CLI paths remain relative to the working directory.
+Independent configuration checks override the \code{strict} shorthand regardless
+of key order. CLI checking flags apply in order:
+\code{--strict}, \code{--no-strict}, \code{--no-implicit}, \code{--allow-implicit},
+\code{--widths-as-errors} and \code{--widths-as-warnings}.
+
+\section{Inspection and Machine-Readable Diagnostics}
+
+\begin{lstlisting}[language=bash]
+slip inspect design.slip
+slip inspect --format=json design.slip
+slip check --diagnostics=json design.slip
+slip check -                         # read source from standard input
+slip build --stdout design.slip      # print SV instead of writing files
+\end{lstlisting}
+
+Inspection runs the complete compilation pipeline. It reports resolved ports,
+signals, parameters, instances, widths and connection origins. JSON adds
+\code{bundles}, \code{interfaces} and signal \code{type} information. A custom
+type's empty packed range does not mean it is one bit. Native interface field
+types reference \code{type(instance.field)}, and their width expressions use
+\code{\$bits(instance.field)} for the total field size, including array elements.
+Diagnostics go to standard error; JSON inspection goes to standard output.
+Diagnostics include source locations and metaprogram expansion bindings where available.
+
+Exit codes are 0 for success, 1 for compilation or I/O failure, and 2 for invalid
+CLI arguments or malformed project configuration.
+
 % ════════════════════════════════════════════════════════════════════
 % Part II: Language Reference
 % ════════════════════════════════════════════════════════════════════
 
 \chapter{Language Overview}
 
-A Slip source file contains one or more module declarations. Comments use \code{//} (line) or \code{/* */} (block) syntax.
+A Slip source file can contain modules, includes, generation-time \code{defun}
+definitions, shared types, RTL functions and bundle schemas. Comments use
+\code{//} (line) or \code{/* */} (block) syntax.
 
 \begin{lstlisting}[language=Slip]
 // This is a comment
@@ -201,12 +268,13 @@ endmodule
 \section{Key Differences from SystemVerilog}
 
 \begin{itemize}
-  \item No \svinline{input}/\svinline{output} keywords --- port directions are inferred.
-  \item No \svinline{wire}/\svinline{reg} --- everything is \svinline{logic}.
+  \item Port directions are inferred by default; explicit \code{input}, \code{output} and \code{inout} declarations are also supported.
+  \item Storage defaults to \code{logic}; \code{bit}, \code{int}, enums, aliases and packed structs are available.
   \item Blocking assignment in \code{seq} blocks is automatically converted to non-blocking.
   \item Compile-time metaprogramming via \slipinline{`for} and \slipinline{`if}.
   \item Template identifiers embed loop variables in signal names (e.g., \code{data\_`i}).
-  \item \code{include "file.slip"} directive for reusing \code{defun} functions and modules across files.
+  \item \code{include "file.slip"} shares modules, generation functions, types, RTL functions and bundle schemas across files.
+  \item Bundles expand to ordinary ports; external SV interfaces support parameterized instances, modport ports and whole-group connections.
   \item Generated SV annotated with \code{// implicit}, \code{// no width}, \code{// width from X.Y} for easy review.
 \end{itemize}
 
@@ -325,7 +393,7 @@ Generates:
 module top (
     input logic clk,
     input logic rst_n,
-    input logic [15:0] count
+    output logic [15:0] count
 );
 
     counter #(
@@ -388,7 +456,8 @@ logic [7:0] data;          // 8-bit signal
 logic flag;                // 1-bit signal
 signed [15:0] val;         // signed 16-bit
 logic [7:0] mem [0:15];    // array of 16 x 8-bit
-logic [WIDTH-1:0] bus;     // parameterized width
+logic [7:0] matrix [0:3][0:15]; // multiple unpacked dimensions
+logic [WIDTH-1:0] payload; // parameterized width
 \end{lstlisting}
 
 The \code{logic} keyword is optional for bare declarations:
@@ -396,6 +465,12 @@ The \code{logic} keyword is optional for bare declarations:
 \begin{lstlisting}[language=Slip]
 data;                      // equivalent to: logic data;
 \end{lstlisting}
+
+Port names remain listed in the module header. Directions may be specified on
+their declarations, for example \code{input logic [7:0] data;} or
+\code{output packet\_t packet;}. Driving an explicit input, including through an
+instance output or inout port, reports \code{E\_DIRECTION}. Explicit scalar
+declarations retain their one-bit width rather than widening on connection.
 
 \section{Implicit Declaration}
 
@@ -441,10 +516,13 @@ Slip infers port directions automatically from signal usage within the module bo
 \midrule
 Only appears in expressions (right-hand side) & \code{input} \\
 Only appears as assignment target (left-hand side) & \code{output} \\
-Both read and driven & \code{inout} \\
+Both read and driven & \code{output} \\
 \bottomrule
 \end{tabular}
 \end{table}
+
+An instance inout connection can infer \code{inout}. Explicit direction
+declarations take precedence over inference.
 
 \section{Example}
 
@@ -572,6 +650,21 @@ Reset polarity options:
   \item \code{neg: rst\_n} --- active-low reset (\svinline{negedge rst\_n})
   \item \code{pos: rst} --- active-high reset (\svinline{posedge rst})
 \end{itemize}
+
+\section{Falling-Edge Clocks and Interface Events}
+
+\begin{lstlisting}[language=Slip]
+seq (neg: clk, neg: rst_n) {
+    if (!rst_n) { q = '0; }
+    else { q = d; }
+}
+// Interface fields may also supply the clock and reset:
+seq (tx.clk, neg: tx.rst_n) { tx.data = data; }
+\end{lstlisting}
+
+\code{seq(clk)} and \code{seq(pos:clk)} use a rising edge;
+\code{seq(neg:clk)} uses a falling edge. Reset edges are selected independently.
+For a synchronous reset, use a conditional inside a clock-only process.
 
 \section{Automatic Blocking-to-Nonblocking Conversion}
 
@@ -957,7 +1050,9 @@ end
 \chapter{Include Directive}
 % ──────────────────────────────────────────────────────────────────
 
-The \code{include} directive imports \code{defun} function definitions and module declarations from another \code{.slip} file. It must appear at the top level, outside module bodies.
+The \code{include} directive imports modules, \code{defun} definitions, shared
+types, RTL functions and bundle schemas from another \code{.slip} file.
+It must appear at the top level, outside module bodies.
 
 \section{Basic Usage}
 
@@ -1314,7 +1409,29 @@ Template identifiers with multiple backtick variables (e.g., \code{a`i\_`j}) are
 
 Loop variables are substituted into hardware expressions without changing literal widths, signedness, four-state values, or assignment context. Hardware arithmetic is left to SystemVerilog. Pure decimal constants in index and dimension expressions can be folded; algebraic identities such as replacing an unknown value multiplied by zero are not applied.
 
-Compile-time controls are evaluated by slang with SystemVerilog semantics. Parameters used directly or indirectly by these controls are fixed at their generation-time defaults. Slip rejects overrides of these parameters, and generated elaboration checks reject different values supplied by downstream SystemVerilog. Change the source configuration and rebuild to change such a parameter. Ordinary RTL parameters remain overridable.
+Compile-time controls are evaluated by slang with SystemVerilog semantics.
+When Slip instances override parameters that control generation, the compiler
+creates a specialized module for each effective generation binding. Identical
+bindings reuse the same module; names are deterministic. Generation overrides
+are consumed by Slip, while ordinary RTL parameter overrides remain in SV.
+Each emitted module retains elaboration checks that prevent later SV overrides
+from contradicting its expanded structure.
+
+\begin{lstlisting}[language=Slip]
+module top(a, b) {
+    logic [1:0] a;
+    logic [3:0] b;
+    generated #(.N(2)) small_instance { .y(a) };
+    generated #(.N(4)) large_instance { .y(b) };
+}
+\end{lstlisting}
+
+Here \code{generated} denotes a module whose \code{N} parameter controls a
+generation loop or conditional. Binding dependencies propagate through nested
+wrappers and RTL function generation controls. Override values must be evaluable
+in the caller's constant environment. The default template is also compiled and
+validated. Limits are 1,024 specializations per compilation and a dependency
+depth of 128; generation integers retain the signed 64-bit limit.
 
 \textbf{Example} --- bit reversal with parameterized width:
 
@@ -1402,21 +1519,20 @@ From highest to lowest (following IEEE 1800-2017):
 \textbf{Priority} & \textbf{Operators} & \textbf{Associativity} \\
 \midrule
 \endhead
-1 (highest) & \code{[]}, \code{[ : ]}, function call, \code{N'(expr)} & Left \\
-2 & \code{+}, \code{-}, \code{!}, \code{\~} (unary); \code{signed'}, \code{unsigned'} & Right \\
-3 & \code{**} & Right \\
+1 (highest) & Selections, fields, function calls and casts & Left \\
+2 & Unary arithmetic, logical and reduction operators & Right \\
+3 & \code{**} & Left \\
 4 & \code{*}, \code{/}, \code{\%} & Left \\
 5 & \code{+}, \code{-} (binary) & Left \\
 6 & \code{<<}, \code{>>}, \code{<<<}, \code{>>>} & Left \\
-7 & \code{<}, \code{>}, \code{<=}, \code{>=} & Left \\
+7 & \code{<}, \code{>}, \code{<=}, \code{>=}, \code{inside} & Left \\
 8 & \code{==}, \code{!=}, \code{===}, \code{!==} & Left \\
 9 & \code{\&} & Left \\
 10 & \code{\^} & Left \\
 11 & \code{|} & Left \\
 12 & \code{\&\&} & Left \\
 13 & \code{||} & Left \\
-14 & \code{?:} (ternary) & Right \\
-15 (lowest) & \code{inside} (set membership) & Left \\
+14 (lowest) & \code{?:} (ternary) & Right \\
 \bottomrule
 \end{longtable}
 \end{table}
@@ -1427,7 +1543,12 @@ From highest to lowest (following IEEE 1800-2017):
 data[3]          // bit select
 data[7:0]        // part select
 data[i]          // variable index
+data[base +: 8]  // 8 bits starting at base, ascending
+data[15 -: 8]    // 8 bits starting at bit 15, descending
 \end{lstlisting}
+
+Indexed-select widths must be constant under SV rules; the starting index may
+vary at runtime. Bounds and width diagnostics use the elaborated SV types.
 
 \section{Concatenation and Replication}
 
@@ -1438,12 +1559,24 @@ data[i]          // variable index
 
 Nested replications are supported: \code{\{4\{\{2\{1'b0\}\}\}\}} produces 8 bits of zero.
 
+Concatenations can also be assignment targets:
+
+\begin{lstlisting}[language=Slip]
+assign {hi, lo} = data;
+assign word[15 -: 8] = byte_value;
+\end{lstlisting}
+
+Targets may combine identifiers, struct fields, array elements, part selects and
+parentheses. Driver checks distinguish fields and constant disjoint ranges;
+dynamic selections use conservative overlap checks.
+
 \section{Type Casting}
 
 \begin{lstlisting}[language=Slip]
 signed'(expr)    // signed cast
 unsigned'(expr)  // unsigned cast
 8'(expr)         // width cast (truncate or zero-extend to 8 bits)
+packet_t'(expr)  // cast to a declared type
 \end{lstlisting}
 
 Both \code{signed} and \code{unsigned} without a following \code{'} raise a syntax error.
@@ -1495,6 +1628,125 @@ Bare integers are \textbf{not allowed} in port connections --- use width-prefixe
 % Part III: Advanced Topics
 % ════════════════════════════════════════════════════════════════════
 
+\chapter{Types, RTL Functions and Assertions}
+
+\section{Enums, Aliases and Packed Structs}
+
+\begin{lstlisting}[language=Slip]
+typedef enum logic [1:0] { IDLE, RUN = 2, DONE } state_t;
+typedef logic [7:0] byte_t;
+typedef struct packed {
+    byte_t data;
+    logic valid;
+} packet_t;
+
+module decode(input_packet, output_packet) {
+    input packet_t input_packet;
+    output packet_t output_packet;
+    state_t state;
+    assign output_packet.data = input_packet.data;
+    assign output_packet.valid = input_packet.valid;
+}
+\end{lstlisting}
+
+Types may be declared at the top level or inside a module. Top-level declarations,
+including those loaded by \code{include}, are copied into each module's scope.
+User-defined port types use non-ANSI SV declarations so the typedefs are in scope.
+Packed structs support data fields and nested declared types. Field selection
+participates in assignment, driver and combinational-feedback checks.
+
+Enum values may be explicit or advance from the preceding value. The default
+base type is SV \code{int}. An inline declaration such as
+\code{enum [1:0] \{ IDLE, RUN \} state;} creates an anonymous type and variable.
+\code{typedef logic [7:0] byte\_t;} defines a packed alias.
+
+\section{Synthesizable RTL Functions}
+
+\begin{lstlisting}[language=Slip]
+function [7:0] invert(logic [7:0] x) {
+    logic [7:0] tmp;
+    tmp = ~x;
+    if (x == 0) { return 8'hff; }
+    else { return tmp; }
+}
+module example(a, y) {
+    logic [7:0] a;
+    logic [7:0] y;
+    assign y = invert(a);
+}
+\end{lstlisting}
+
+RTL functions may appear at the top level or inside modules and emit
+\code{function automatic}. Return types can be \code{logic}, \code{bit},
+\code{int}, a packed width or a named type; an omitted type means scalar logic.
+Arguments are inputs. Local variables, types, constants, control flow,
+generation loops, assertions and returns are supported.
+
+Functions may read their arguments, local names and module constants. Assignments
+must be blocking, and all control paths must return a value. Nonlocal signal
+dependencies, instances, nested functions and clocked processes are rejected with
+\code{E\_FUNCTION}. Local names do not become module ports.
+Generation-time \code{defun} functions remain a separate mechanism for producing
+connection names and constant values.
+
+\section{Static and Runtime Assertions}
+
+\begin{lstlisting}[language=Slip]
+module control #(param DEPTH = 8) (clk, valid) {
+    logic clk;
+    logic valid;
+    static_assert(DEPTH > 0, "DEPTH must be positive");
+    seq (clk) { assert(valid, "valid required"); }
+}
+\end{lstlisting}
+
+\code{static\_assert} belongs at module level. It is checked during compilation
+and retained as an SV elaboration check, so ordinary instance parameter overrides
+must also satisfy the constraint. Conditions can use constant expressions,
+module constants, type queries and evaluable RTL functions. Direct evaluation
+failures report \code{E\_ASSERT}; failures found during SV elaboration report
+\code{E\_SV}.
+
+\code{assert} belongs inside a process or RTL function. It emits an immediate
+assertion followed by \code{\$error} on failure. Messages are optional.
+Enable assertions in the downstream simulator, for example with Verilator's
+\code{--assert} flag.
+
+\chapter{Signal Bundles}
+\label{ch:bundles}
+
+\begin{lstlisting}[language=Slip]
+bundle Stream #(param W = 8) {
+    output logic [W-1:0] data;
+    output logic valid;
+    input logic ready;
+}
+
+module passthrough(rx, tx) {
+    slave Stream #(.W(16)) rx;
+    master Stream #(.W(16)) tx;
+    assign tx.data = rx.data;
+    assign tx.valid = rx.valid;
+    assign rx.ready = tx.ready;
+}
+\end{lstlisting}
+
+Directions in the schema use the master's viewpoint; a slave reverses them.
+Exported groups must appear in the module's port list and declare a
+\code{master} or \code{slave} role. Internal groups use \code{bus Stream link;}.
+Schema parameters use named overrides, with validation of unknown names,
+duplicates and dependent defaults.
+
+Fields expand to ordinary SV signals and ports, such as \code{rx\_data} and
+\code{rx\_ready}. A connection like \code{.rx(link)} expands the complete group;
+\code{.rx} connects a group named \code{rx}. Both ends must have the same schema
+and fields. Field widths retain full SV checks. Explicit field connections and
+regex connections remain available. Unknown fields, conflicting directions,
+duplicate drivers and parameter errors are diagnosed.
+
+\code{inspect} lists schemas and fields; JSON exposes \code{bundles} and marks
+expanded connection origins as \code{bundle}.
+
 \chapter{IP Integration}
 
 Slip can instantiate external SystemVerilog modules by providing IP directories or VCS-format filelists:
@@ -1545,7 +1797,17 @@ IP scanning uses a two-pass approach to resolve \code{`define} ordering:
 
 \textbf{Pass 1 --- Collection}: Parse all filelists, collect source files, include paths, and macro definitions. Recursively scan IP directories and merge with filelist entries (deduplication).
 
-\textbf{Pass 2 --- Reflection}: Parse all IP files together using \code{SyntaxTree.fromFiles()} with a shared preprocessor context. This ensures that \code{`define} macros in one file are available to subsequent files, solving the define ordering problem that would occur with per-file parsing.
+\textbf{Pass 2 --- Parsing and indexing}: Parse all IP files together using
+slang's \code{SyntaxTree::fromFiles()} with a shared preprocessor context.
+This preserves macro ordering across files. Ports and parameters are reflected
+lazily when Slip actually references a module or interface.
+
+An unused module with unsupported type parameters no longer blocks the whole IP
+directory merely because reflection cannot represent it. Referenced modules with
+type parameters still report \code{E\_IP}. Supported native interface ports are
+described in Chapter~\ref{ch:native-interfaces}. Syntax errors in external files
+and semantic errors in the actual design are still reported. Validation selects
+roots from the generated design instead of elaborating unrelated vendor roots.
 
 \section{Example}
 
@@ -1584,6 +1846,113 @@ module top (clk, rst_n, data_in, data_out) {
 \end{lstlisting}
 
 The \code{.full(\_)} connection leaves the \code{full} output dangling.
+
+\chapter{Native SystemVerilog Interfaces}
+\label{ch:native-interfaces}
+
+External SV interface definitions can be loaded using \code{-ip}, \code{-f} or
+project configuration. Slip emits real interface instances and modport ports.
+This facility is distinct from the ordinary signal expansion of bundles
+(Chapter~\ref{ch:bundles}); there is no implicit conversion between the two.
+
+\section{External Definition}
+
+The example interface below has a width parameter, clock/reset constructor
+ports and master/slave modports. The external sink uses an interface port and
+checks that its own width parameter matches the actual interface.
+
+\lstinputlisting[language=SystemVerilog,
+  caption={External Stream interface and sink}]{../../examples/native-interface/ip/stream.sv}
+
+\section{Instances and Modport Ports}
+
+\begin{lstlisting}[language=Slip]
+// Internal interface instance, including constructor connections:
+interface Stream #(.W(16)) link { .clk(clk), .rst_n(rst_n) };
+
+// Inside a module whose port list includes tx:
+interface Stream.master tx;
+\end{lstlisting}
+
+An internal declaration accepts named parameter overrides and named constructor
+connections; \code{.clk} is shorthand for \code{.clk(clk)}. With no constructor
+connections, the braces may be omitted. Unknown or duplicate parameters and
+localparam overrides are rejected.
+
+Slip interface ports must appear in the module header and specify a modport.
+They inherit interface parameters and constructor connections from the caller's
+actual instance; neither can be specified again on the port declaration.
+Internal instances are declared without a modport; select a view at the endpoint.
+
+\section{Field Access and Whole-Group Connections}
+
+\begin{lstlisting}[language=Slip]
+assign tx.valid = enable;
+seq (tx.clk, neg: tx.rst_n) { tx.data = data; }
+
+producer source { .tx(link), .data, .enable };
+stream_sink sink { .bus(link.slave), .observed };
+\end{lstlisting}
+
+Fields support expressions,
+selects, arrays and packed-struct member access. Clock and reset expressions may
+also reference fields. Unknown or hidden fields report \code{E\_INTERFACE}.
+Writing an input field, including via an instance output or inout connection,
+reports \code{E\_DIRECTION}. Overlapping field drivers report
+\code{E\_MULTIPLE\_DRIVERS}. Slang analysis also checks driver conflicts involving
+the interface's own SV logic.
+
+Whole-group connections accept a declared interface instance or port, optionally
+with an explicit modport selection. The interface type must match, and a selected
+modport must match the destination's restriction. A forwarded modport port keeps
+the same view, preserving direction and field-access restrictions. Missing
+interface connections, including explicit \code{\_}, are errors.
+External unrestricted interface ports may receive internal instances; without
+a selected view they are treated as bidirectional connections.
+
+The actual interface determines field types and widths. For example, connecting
+\code{Stream \#(.W(16))} makes \code{tx.data} 16 bits. Use
+\code{static\_assert(\$bits(tx.data) == W);} when a module parameter must match.
+Width mismatches are warnings by default and errors under \code{--strict}.
+
+\section{Complete Parameterized Example}
+
+\lstinputlisting[language=Slip,
+  caption={Slip producer and native interface interconnect}]{../../examples/native-interface/design.slip}
+
+The project configuration loads the external definition and enables strict checks:
+
+\lstinputlisting[caption={Native interface project configuration}]{../../examples/native-interface/slip.conf}
+
+From the repository root:
+
+\begin{lstlisting}[language=bash]
+build/release/slip check --project examples/native-interface/slip.conf
+build/release/slip build --project examples/native-interface/slip.conf
+build/release/slip inspect --project examples/native-interface/slip.conf --format=json
+\end{lstlisting}
+
+Downstream tools must read both the generated modules and the external SV files.
+The compiler does not copy external definitions into each generated module.
+
+\section{Inspection and Current Scope}
+
+Text inspection lists the interface type, modport, parameters, instance/port
+identity and accessible fields. JSON adds a module-level \code{interfaces}
+array with \code{name}, \code{type}, \code{modport}, \code{port}, \code{location},
+\code{parameters} and \code{fields}. Native fields also appear as dotted entries
+in \code{signals}; these checking-only entries do not generate extra declarations.
+Types use \code{type(instance.field)} and width expressions use
+\code{\$bits(instance.field)} for the total field size. Whole-group connection
+origins are marked \code{interface}.
+
+Supported definitions expose top-level data fields and modports composed of
+input/output/inout data fields. Current exclusions are interface instance/port
+arrays, nested interfaces, type parameters, clocking, modport expressions or
+renamed fields, ref fields and imported/exported tasks or functions.
+Unsupported views are rejected when used; unused complex modports do not block
+other supported views. The full syntax and boundaries are also documented in
+\code{docs/native-interfaces.md}.
 
 % ──────────────────────────────────────────────────────────────────
 \chapter{Semantic Rules}
@@ -1644,11 +2013,14 @@ assign st[2] = st[1];
 // ERROR: combinational loop detected: st[2] -> st[1] -> st[0] -> st[2]
 \end{lstlisting}
 
-If a cycle is found, a \code{SlipSemanticError} is raised.
+If a cycle is found, compilation reports \code{E\_COMB\_LOOP}.
 
 \section{Width Mismatch Warnings}
 
-The compiler checks for width mismatches in assignments and instance port connections. When both sides have concrete integer widths and they differ, a warning is emitted:
+The compiler checks assignments and instance connections against their elaborated
+SV types. Width expansion, truncation and constant-conversion diagnostics become
+\code{W\_WIDTH}, or \code{E\_SV} under \code{--strict} or
+\code{--widths-as-errors}:
 
 \begin{lstlisting}[language=Slip]
 module m (out[7:0], other[3:0]) {
@@ -1680,7 +2052,25 @@ module top (out[3:0]) {
 }
 \end{lstlisting}
 
-Parameterized widths with default values are evaluated using those defaults. Widths that cannot be evaluated are silently skipped.
+Widths are resolved in the actual SV parameterization, including native interface
+field types. Symbolic expressions remain in generated RTL for downstream tools;
+they are not discarded merely because the early reflection pass cannot reduce them.
+
+\section{RTL Analysis and Connection Warnings}
+
+After successful elaboration, slang dataflow analysis checks generated Slip RTL
+with external IP participating in driver and type resolution. Diagnostics include
+\code{W\_UNDRIVEN} for internal signals without a driver and \code{W\_LATCH} for
+incomplete combinational assignments. Complete cases, partial-bit assignments,
+loops, initialization and instance drivers are considered. Branch and loop
+analysis each have a 10,000-step resource bound and do not replace simulation.
+
+Regex rules that establish no connection report \code{W\_REGEX\_UNUSED}, including
+rules shadowed by explicit connections or earlier rules. Omitted ports report
+\code{W\_UNCONNECTED}; explicit \code{.port(\_)} marks an intentional omission.
+Omitted local input connections remain errors, and native interface connections
+are always required. These analysis and connection warnings remain warnings in
+strict mode.
 
 \section{Localparam Override Protection}
 
@@ -1781,7 +2171,38 @@ Integer literal contains a digit invalid for the specified radix (e.g.\ \texttt{
 Literal has only underscores after the radix prefix (e.g.\ \texttt{4'b\_}).
 
 \item[\texttt{E\_LIMIT}]
-A compilation resource limit was exceeded. Defaults include 10,000 metaprogram loop iterations and 100,000 expanded statements per module. Metaprogram controls and defun integers must fit a signed 64-bit integer; defun strings operate on bytes.
+A compilation resource limit was exceeded. Defaults include 10,000 metaprogram
+loop iterations and 100,000 expanded statements per module, 1,024 specializations
+per compilation and specialization dependency depth 128. Metaprogram controls
+and defun integers must fit a signed 64-bit integer; defun strings operate on bytes.
+
+\item[\texttt{E\_CONFIG}]
+An unknown or repeated scalar project key, invalid boolean, or malformed quoted
+value. The diagnostic points to the configuration line.
+
+\item[\texttt{E\_DIRECTION}]
+An explicit input signal or interface field is driven internally or through an
+instance output/inout connection, or modport views are incompatible.
+
+\item[\texttt{E\_INTERFACE}]
+An unresolved native interface, incompatible type, unknown or inaccessible field,
+unsupported modport feature, or invalid interface declaration/connection.
+Slip interface ports require a modport and inherit configuration from the caller.
+
+\item[\texttt{E\_BUNDLE}]
+An unknown bundle schema/field, incompatible group connection or invalid role.
+
+\item[\texttt{E\_FUNCTION}]
+An RTL function has nonlocal signal dependencies, stateful operations,
+nonblocking assignments, missing returns or incomplete return paths.
+
+\item[\texttt{E\_ASSERT} / \texttt{E\_SV}]
+A static assertion failed during direct evaluation or SV elaboration, respectively.
+\code{E\_SV} also reports other invalid generated or instantiated SV semantics.
+
+\item[\texttt{E\_DUPLICATE}]
+Conflicting declarations or repeated IP definitions. Duplicate IP modules are
+errors; no definition is chosen arbitrarily.
 
 \item[\texttt{cannot evaluate 'name' at compile time}]
 Non-constant expression in \slipinline{`for}/\slipinline{`if} condition, init, or step.
@@ -1831,7 +2252,7 @@ A reset signal is used with conflicting polarity (both \code{pos:} and \code{neg
 
 \begin{description}[style=nextline,leftmargin=2em]
 
-\item[\texttt{in seq block of module 'M', the blocking assignment to 'name' reads its own previous value}]
+\item[\texttt{W\_SEQ\_CONVERSION}]
 A blocking assignment converts to nonblocking in a \code{seq} block (unconditionally, as described in the conversion chapter). This warning fires for the assignments whose meaning that changes: a read-modify-write of storage already written on the same path, such as a loop accumulator (\code{for (...) \{ sum = sum + b; \}}) or \code{y = 0; y = y + b;}. The read will observe the pre-clock value, so restructure or use a \code{comb} block if the updated value was intended. Register transfers (shift registers, \code{t = a + 1; o = t;}) convert silently.
 
 \item[\texttt{width mismatch: 'name' is N bits, but value is M bits}]
@@ -1846,8 +2267,12 @@ An instance port connection has mismatched widths between the port declaration a
 \item[\texttt{unconnected output port 'name' in instance 'I' of module 'M'}]
 An output port matched no connection and no regex rule; it is left dangling.
 
-\item[\texttt{duplicate module 'name' in IP sources}]
-Two IP files define the same module. The first definition is kept; the choice is otherwise arbitrary.
+\item[\texttt{W\_UNDRIVEN}, \texttt{W\_LATCH}]
+An internal signal is undriven, or a combinational process infers a latch.
+
+\item[\texttt{W\_REGEX\_UNUSED}, \texttt{W\_UNCONNECTED}]
+A regex rule made no connections, or an instance port was omitted without an
+explicit intentional omission.
 
 \item[\texttt{output directory ... contains SystemVerilog files not produced by this run}]
 Stale \code{.sv} files from an earlier build (a renamed module, say) are still present. Downstream tools that compile a whole directory would pick them up.
@@ -1856,6 +2281,24 @@ Stale \code{.sv} files from an earlier build (a renamed module, say) are still p
 
 % ──────────────────────────────────────────────────────────────────
 \chapter{Complete Examples}
+
+\section{Combined RTL Features}
+
+\code{examples/features/slip.conf} enables strict compilation of a design that
+combines packed types, enums, RTL functions, master/slave bundles, parameter
+specialization, multidimensional arrays, indexed selects, concatenated targets,
+falling-edge processes and assertions. Inspect it from the repository root:
+
+\begin{lstlisting}[language=bash]
+build/release/slip check --project examples/features/slip.conf
+build/release/slip inspect --project examples/features/slip.conf
+\end{lstlisting}
+
+\lstinputlisting[language=Slip,
+  caption={Combined RTL features}]{../../examples/features/design.slip}
+
+The native interface example and its external SV sources appear in
+Chapter~\ref{ch:native-interfaces}.
 % ──────────────────────────────────────────────────────────────────
 
 \section{Parameterized Pipeline Register}
@@ -2281,6 +2724,7 @@ endmodule
 CompilationUnit ::= { TopLevelItem }
 
 TopLevelItem ::= ModuleDecl | FuncDef | IncludeDirective
+              | TypeDecl | FunctionDecl | BundleSchema
 
 IncludeDirective ::= "include" STRING ";"
 
@@ -2308,21 +2752,64 @@ Statement ::= SignalDecl
             | GenIfStmt
             | InstanceStmt
             | BlockStmt
+            | TypeDecl
+            | FunctionDecl
+            | ReturnStmt
+            | AssertionStmt
+            | BundleUse
+            | NativeInterfaceUse
 
-SignalDecl ::= ["logic"] ["signed"] [ "[" Expr "]" ]
-               IDENT [ "[" Expr ":" Expr "]" ] ";"
+Direction  ::= "input" | "output" | "inout"
+BaseType   ::= "logic" | "bit" | "int" | IDENT
+PackedWidth ::= "[" Expr [ ":" Expr ] "]"
+UnpackedRange ::= "[" Expr ":" Expr "]"
+TypedName  ::= ["signed"] [BaseType] ["signed"]
+               [PackedWidth] IDENT { UnpackedRange }
+SignalDecl ::= [Direction] TypedName ";"
 
-LocalparamDecl ::= "localparam" IDENT "=" Expr ";"
+TypeDecl ::= "typedef" TypedName ";"
+           | ["typedef"] EnumBody IDENT ";"
+           | ["typedef"] StructBody IDENT ";"
+EnumBody ::= "enum" [BaseType] ["signed"] [PackedWidth]
+             "{" EnumItem { "," EnumItem } [","] "}"
+EnumItem ::= IDENT [ "=" Expr ]
+StructBody ::= "struct" "packed" "{" { SignalDecl } "}"
+
+FunctionDecl ::= "function" ["automatic"] TypedName
+                 "(" [ FunctionArg { "," FunctionArg } ] ")"
+                 BlockStmt
+FunctionArg ::= ["input"] TypedName
+ReturnStmt ::= "return" Expr ";"
+AssertionStmt ::= ("assert" | "static_assert")
+                  "(" Expr [ "," STRING ] ")" ";"
+
+BundleSchema ::= "bundle" IDENT [ "#(" ParameterList ")" ]
+                 "{" { SignalDecl } "}" [";"]
+NamedOverrides ::= "#(" [NamedParam { "," NamedParam }] ")"
+BundleUse ::= ("master" | "slave" | "bus") IDENT
+              [NamedOverrides] IDENT ";"
+NativeInterfaceUse ::= "interface" IDENT [ "." IDENT ]
+                       [NamedOverrides] IDENT
+                       ["{" [NamedConnection
+                           { "," NamedConnection }] "}"] ";"
+
+FuncDef ::= "defun" IDENT "(" [IDENT { "," IDENT }] ")" ":"
+            INDENT "return" Expr [";"] DEDENT
+
+LocalparamDecl ::= "localparam" IDENT "=" Expr
+                  { "," IDENT "=" Expr } ";"
 
 AssignStmt ::= ["assign"] Lvalue "=" Expr ";"
+             | Lvalue "<=" Expr ";"
              | ["assign"] Lvalue CompoundOp Expr ";"
 
 CompoundOp ::= "+=" | "-=" | "*=" | "/=" | "%="
              | "&=" | "|=" | "^=" | "<<=" | ">>="
              | "<<<=" | ">>>="
 
-SeqBlock     ::= "seq" "(" IDENT
-                 [ "," ("pos" | "neg") ":" IDENT ] ")" BlockStmt
+EventExpr    ::= Expr
+SeqBlock     ::= "seq" "(" [ ("pos" | "neg") ":" ] EventExpr
+                 [ "," ("pos" | "neg") ":" EventExpr ] ")" BlockStmt
 CombBlock    ::= "comb" BlockStmt
 InitialBlock ::= "initial" BlockStmt
 
@@ -2351,11 +2838,16 @@ InstanceStmt ::= IDENT
                  IDENT "{" { Connection } "}" [";"]
 
 NamedParam ::= "." IDENT "(" Expr ")"
-Connection ::= "." IDENT [ "(" Expr ")" ]
+NamedConnection ::= "." IDENT [ "(" Expr ")" ]
+Connection ::= NamedConnection
              | STRING "=>" STRING
 
 BlockStmt ::= "{" { Statement } "}"
-Lvalue    ::= IDENT { "[" Expr "]" | "[" Expr ":" Expr "]" }
+SelectSuffix ::= "[" Expr "]" | "[" Expr ":" Expr "]"
+               | "[" Expr ("+:" | "-:") Expr "]" | "." IDENT
+Lvalue ::= IDENT { SelectSuffix }
+         | "(" Lvalue ")" { SelectSuffix }
+         | "{" Lvalue { "," Lvalue } "}"
 \end{lstlisting}
 
 \textbf{Notes on the grammar:}
@@ -2363,7 +2855,10 @@ Lvalue    ::= IDENT { "[" Expr "]" | "[" Expr ":" Expr "]" }
   \item \code{TICK\_IDENT} denotes a backtick-prefixed identifier (e.g., \code{`i}).
   \item Template identifiers (e.g., \code{data\_`i}) are formed at the lexical level by merging adjacent \code{IDENT}, \code{TICK}, and \code{TICK\_IDENT} tokens.
   \item Expressions are parsed by a Pratt parser and support all operators listed in the operator precedence table.
-  \item Special expression forms include concatenation \code{\{a, b\}}, replication \code{\{n\{expr\}\}}, width cast \code{N'(expr)}, and set membership \code{x inside \{v1, v2, ...\}}.
+  \item The grammar summarizes syntax; context rules restrict declarations, returns, assertions and processes to their permitted scopes. Enum bases are logic/bit/int; packed struct fields have no port directions or unpacked dimensions. Function arguments are inputs. Bundle fields require input/output directions.
+  \item Native interface ports require a modport and inherit parameters; internal interface instances may set parameters and constructor connections. Instance and port arrays are not supported.
+  \item \code{INDENT}/\code{DEDENT} summarize the indentation-based defun body. RTL \code{function} bodies use braces.
+  \item Special expression forms include concatenation \code{\{a, b\}}, replication \code{\{n\{expr\}\}}, width or named-type casts, field access, indexed part selects, and set membership \code{x inside \{v1, v2, ...\}}.
   \item Compound assignment operators are desugared at parse time into regular assignments.
 \end{itemize}
 

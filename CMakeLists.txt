@@ -66,6 +66,31 @@ target_include_directories(slip_core PUBLIC
 target_compile_features(slip_core PUBLIC cxx_std_20)
 set_target_properties(slip_core PROPERTIES CXX_EXTENSIONS OFF)
 target_link_libraries(slip_core PRIVATE slang::slang)
+# slang 10's installed analysis headers can omit the bundled thread-pool header.
+# Use the source copy when building slang, or fetch that exact pinned header.
+get_target_property(_slip_slang_definitions slang::slang INTERFACE_COMPILE_DEFINITIONS)
+if("SLANG_USE_THREADS" IN_LIST _slip_slang_definitions)
+    get_target_property(_slip_slang_includes slang::slang INTERFACE_INCLUDE_DIRECTORIES)
+    find_path(SLIP_SLANG_THREAD_POOL_INCLUDE_DIR BS_thread_pool.hpp
+        HINTS "${slang_SOURCE_DIR}/external" ${_slip_slang_includes})
+    if(NOT SLIP_SLANG_THREAD_POOL_INCLUDE_DIR)
+        if(NOT SLIP_FETCH_SLANG)
+            message(FATAL_ERROR "slang analysis requires BS_thread_pool.hpp; set SLIP_SLANG_THREAD_POOL_INCLUDE_DIR to slang's external directory")
+        endif()
+        set(_slip_analysis_headers "${CMAKE_CURRENT_BINARY_DIR}/_deps/slang-analysis-headers")
+        file(MAKE_DIRECTORY "${_slip_analysis_headers}")
+        file(DOWNLOAD
+            "https://raw.githubusercontent.com/MikePopoloski/slang/ace09c5d7c9f4e28eed654d2f353c6dc792ebf67/external/BS_thread_pool.hpp"
+            "${_slip_analysis_headers}/BS_thread_pool.hpp"
+            EXPECTED_HASH SHA256=38214cd5308ec016173ff2edd911f479f30fd91eaf143c0452275cc52bdcf58a
+            TLS_VERIFY ON STATUS _slip_header_status TIMEOUT 30)
+        if(NOT _slip_header_status MATCHES "^0;")
+            message(FATAL_ERROR "Cannot obtain slang's thread-pool header: ${_slip_header_status}; set SLIP_SLANG_THREAD_POOL_INCLUDE_DIR for offline builds")
+        endif()
+        set(SLIP_SLANG_THREAD_POOL_INCLUDE_DIR "${_slip_analysis_headers}" CACHE PATH "slang thread-pool header directory" FORCE)
+    endif()
+    target_include_directories(slip_core SYSTEM PRIVATE "${SLIP_SLANG_THREAD_POOL_INCLUDE_DIR}")
+endif()
 find_path(SLIP_PCRE2_INCLUDE_DIR pcre2.h REQUIRED)
 find_library(SLIP_PCRE2_LIBRARY NAMES pcre2-8 REQUIRED)
 target_include_directories(slip_core PRIVATE ${SLIP_PCRE2_INCLUDE_DIR})
@@ -101,7 +126,7 @@ if(SLIP_LIBFUZZER)
     target_compile_options(slip_core PRIVATE -fsanitize=fuzzer-no-link)
 endif()
 
-add_executable(slip src/main.cpp)
+add_executable(slip src/main.cpp src/project.cpp)
 target_link_libraries(slip PRIVATE slip_core)
 install(TARGETS slip RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
@@ -144,6 +169,8 @@ if(BUILD_TESTING)
         tests/regression/frontend.cpp
         tests/regression/semantic.cpp
         tests/regression/diagnostics.cpp
+        tests/regression/lint.cpp
+        tests/regression/features.cpp
         tests/regression/runtime.cpp)
     add_executable(slip_regressions tests/regression_main.cpp ${_slip_regressions})
     target_link_libraries(slip_regressions PRIVATE slip::core Threads::Threads)
@@ -166,10 +193,14 @@ if(BUILD_TESTING)
         "-DSLIP_BIN=$<TARGET_FILE:slip>"
         "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/tests/cli"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli.cmake")
+    add_test(NAME compiler.project COMMAND ${CMAKE_COMMAND}
+        "-DSLIP_BIN=$<TARGET_FILE:slip>"
+        "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/tests/project"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/project.cmake")
 
     find_program(SLIP_VERILATOR verilator)
     if(SLIP_VERILATOR)
-        foreach(_slip_behavior pipeline combinational state_machine array_parameters)
+        foreach(_slip_behavior pipeline combinational state_machine array_parameters features)
             set(_slip_behavior_source "${CMAKE_CURRENT_SOURCE_DIR}/tests/behavior")
             if(NOT _slip_behavior STREQUAL "pipeline")
                 string(APPEND _slip_behavior_source "/${_slip_behavior}")
@@ -177,6 +208,7 @@ if(BUILD_TESTING)
             add_test(NAME compiler.behavior.${_slip_behavior} COMMAND ${CMAKE_COMMAND}
             "-DSLIP_BIN=$<TARGET_FILE:slip>"
             "-DVERILATOR=${SLIP_VERILATOR}"
+            "-DCASE_NAME=${_slip_behavior}"
             "-DSOURCE_DIR=${_slip_behavior_source}"
             "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/tests/behavior/${_slip_behavior}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/behavior.cmake")

@@ -52,7 +52,9 @@ TEST_CASE(localparam_width_resolves_in_parent) {
     test::contains(sv, "input logic [15:0] a");
 }
 TEST_CASE(transitive_metaprogram_parameter_is_frozen) {
-    test::rejected("module leaf #(param BASE=2,param N=BASE+1)(y) { logic [N-1:0] y; `for (`i=0;`i<N;`i=`i+1) { assign y[`i]=1'b0; } } module m(y) { leaf #(.BASE(4)) u {.y}; }", "E_PARAMETER", "controls expanded structure");
+    auto result = slip::compile("module leaf #(param BASE=2,param N=BASE+1)(y) { logic [N-1:0] y; `for (`i=0;`i<N;`i=`i+1) { assign y[`i]=1'b0; } } module m(y) { leaf #(.BASE(4)) u {.y}; }");
+    test::contains(result.modules.at("m"), "output logic [4:0] y");
+    CHECK(result.modules.size() == 3);
 }
 TEST_CASE(localparam_and_unknown_parameter_overrides_are_rejected) {
     for (auto name : {"N", "TYPO"}) {
@@ -111,4 +113,53 @@ TEST_CASE(seq_conversion_reports_prior_write) {
     CHECK(result.warnings.size() == 1);
     CHECK(result.warnings[0].code == "W_SEQ_CONVERSION");
     test::contains(result.modules.at("m"), "y <= y + a;");
+}
+
+TEST_CASE(strict_checks_can_be_selected_independently) {
+    const auto width_source = "module m(a,y) { logic [15:0] a; logic [7:0] y; assign y=a; }";
+    slip::Options options; options.no_implicit = true;
+    auto result = slip::compile(width_source, "width.slip", options);
+    CHECK(result.warnings.size() == 1);
+    CHECK(result.warnings.front().code == "W_WIDTH");
+    options.no_implicit = false; options.widths_as_errors = true;
+    test::rejected(width_source, "E_SV", {}, options);
+    result = slip::compile("module m(y) { logic y; assign y=a; }", "implicit.slip", options);
+    CHECK(result.warnings.size() == 2);
+    CHECK(result.warnings.front().code == "W_IMPLICIT");
+    CHECK(result.warnings.back().code == "W_UNDRIVEN");
+    options.strict = true;
+    test::rejected("module m(y) { logic y; assign y=a; }", "E_IMPLICIT", {}, options);
+}
+TEST_CASE(inspection_preserves_resolved_parameterized_regex_connections) {
+    const auto source = "module m(bus_a,bus_y) { leaf #(.W(16)) u { \"data_(.*)\" => \"bus_\\1\" }; } "
+        "module leaf #(param W=8)(data_a,data_y) { logic [W-1:0] data_a; logic [W-1:0] data_y; assign data_y=data_a; }";
+    auto ordinary = slip::compile(source);
+    CHECK(ordinary.inspection.empty());
+    slip::Options options; options.collect_inspection = true;
+    auto inspected = slip::compile(source, "inspect.slip", options);
+    CHECK(inspected.modules == ordinary.modules);
+    CHECK(inspected.inspection.size() == 2);
+    const auto& module = inspected.inspection.at("m");
+    CHECK(module.ports[0].width == "[15:0]");
+    CHECK(module.ports[0].direction == "input");
+    CHECK(module.ports[1].direction == "output");
+    CHECK(module.ports[1].inferred_from == "leaf.data_y");
+    const auto& instance = module.instances.front();
+    CHECK(instance.parameters.front().second == "16");
+    CHECK(instance.connection_details.size() == 2);
+    CHECK(instance.connection_details[0].signal == "bus_a");
+    CHECK(instance.connection_details[1].signal == "bus_y");
+    CHECK(instance.connection_details[0].origin == "regex: data_(.*)");
+}
+TEST_CASE(inspection_distinguishes_omitted_and_intentionally_dangling_ports) {
+    slip::Options options; options.collect_inspection = true;
+    auto result = slip::compile("module leaf(a,y,z) { assign y=a; assign z=a; } module m(a) { leaf u {.a,.y(_)}; }", "inspect.slip", options);
+    const auto& connections = result.inspection.at("m").instances.front().connection_details;
+    CHECK(connections.size() == 3);
+    CHECK(connections[0].signal == "a");
+    CHECK(connections[0].origin == "shorthand");
+    CHECK(connections[1].signal == "_");
+    CHECK(connections[1].origin == "explicit");
+    CHECK(connections[2].signal.empty());
+    CHECK(connections[2].origin == "unconnected");
 }

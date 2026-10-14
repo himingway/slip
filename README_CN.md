@@ -219,7 +219,6 @@ if (state inside {IDLE, RUN, DONE}) {
 ```slip
 initial {
     clk = 0;
-    forever #5 clk = ~clk;
 }
 ```
 
@@ -282,6 +281,17 @@ child u1 {
 1'b0  // 带宽度前缀（端口连接中必须使用）
 ```
 
+## RTL 功能扩展
+
+支持拼接赋值、`+:` / `-:` 取片、多维非压缩数组、下降沿时钟、枚举与 packed 结构体、
+按实例参数特化、按需 IP 反射、带主从角色的总线分组、可综合函数及编译时/运行时断言。
+完整语法、边界及组合示例见 [RTL 功能说明](docs/rtl-features.md) 和
+[功能示例项目](examples/features/slip.conf)。
+
+支持原生 SystemVerilog interface 的参数化实例、modport 端口、整组连接及字段访问，
+并保留方向、位宽与驱动检查。见 [原生 interface 说明](docs/native-interfaces.md) 和
+[参数化示例](examples/native-interface/slip.conf)。
+
 ## 安装
 
 ### 原生 C++ 编译器
@@ -309,6 +319,48 @@ cmake --install build/release --prefix "$HOME/.local"
 
 ## 使用方法
 
+### 项目配置
+
+在项目目录保存 `slip.conf`，即可使用 `slip build`、`slip check` 或 `slip inspect`：
+
+```ini
+entry = rtl/top.slip
+out_dir = build/rtl
+filelist = ip.f
+ip_dir = "external ip"
+strict = true
+```
+
+配置是一行一个 `key = value`，支持 `#` 注释。路径可以不加引号，也可以用双引号
+或单引号；含 `#` 的路径必须加引号。双引号内支持 `\"` 和 `\\`，单引号内的
+反斜杠保持原样。所有配置路径相对于 `slip.conf` 所在目录解析。
+
+支持的键为 `entry`、`out_dir`、`filelist`、`ip_dir`、`strict`、`no_implicit` 和
+`widths_as_errors`。`filelist` 和 `ip_dir` 可重复；其他键重复或未知键会报
+`E_CONFIG`。布尔值为 `true` / `false`。未设置 `out_dir` 时输出到配置目录下的
+`build`；未设置 `entry` 时需从命令行提供输入文件。
+
+`strict = true` 同时启用隐式声明和位宽检查；独立的 `no_implicit`、
+`widths_as_errors` 设置优先于 `strict`，不受配置键顺序影响。
+
+```bash
+slip build                                  # 读取当前目录的 slip.conf
+slip check --project path/to/slip.conf       # 从任意目录使用项目配置
+slip inspect --project slip.conf --format=json
+slip build --project slip.conf other.slip -o output
+slip check --project slip.conf --widths-as-warnings
+slip check --project slip.conf --allow-implicit
+```
+
+省略输入文件时自动读取当前目录的 `slip.conf`，不搜索父目录。显式指定输入文件时，
+只有传入 `--project` 才读取配置。命令行输入和 `-o` 覆盖配置值，命令行 `-ip` / `-f`
+追加到配置列表，路径相对于当前工作目录。检查开关按命令行顺序生效：`--strict`
+启用两项检查，`--no-strict` 关闭两项，`--allow-implicit` 和 `--widths-as-warnings`
+分别关闭对应检查。
+
+可直接使用 [示例项目](examples/project/slip.conf)：
+`slip check --project examples/project/slip.conf`。
+
 ### 编译
 
 ```bash
@@ -324,9 +376,48 @@ slip build -f ip.f -ip ip_dir design.slip # filelist + 目录（组合使用）
 ```bash
 slip check design.slip                    # 运行完整编译校验，不写出文件
 slip check --strict design.slip           # 要求显式声明，位宽不匹配时报错
+slip check --no-implicit design.slip      # 仅禁止隐式声明，保留位宽警告
+slip check --widths-as-errors design.slip # 仅将位宽不匹配视为错误
 slip check -ip ip_dir design.slip         # 含 IP 目录
 slip check -f ip.f design.slip            # 含 filelist
 ```
+
+### 查看推断和连接结果
+
+```bash
+slip inspect design.slip                 # 查看端口方向、位宽、信号和实例连接
+slip inspect -f ip.f design.slip          # 包含外部 IP
+slip inspect --format=json design.slip   # 结构化结果写到 stdout
+```
+
+`inspect` 执行与 `check` 相同的完整设计校验，不写出 SV 文件。结果按模块名排序，
+包含隐式信号、位宽来源、固定的元编程参数，以及每个实例端口的最终连接。
+连接来源区分显式连接、同名简写和正则规则；有意悬空的 `_` 与未连接端口分别显示。
+JSON 包含信号的 `type` 和分组的 `bundles`；logic/bit 单比特信号的 `width` 为空字符串，
+自定义类型和 int 的大小由 SV 类型决定。未连接端口的 `signal` 为空字符串，
+有意悬空端口的 `signal` 为 `_`。诊断始终写到 stderr，可组合 `--diagnostics=json`。
+
+### 诊断
+
+默认模式下，隐式信号和隐式端口会产生 `W_IMPLICIT` 警告，显示首次使用位置、
+最终推断位宽及可能的拼写建议。`--no-implicit` 将其视为错误；`--strict` 同时启用
+`--no-implicit` 和 `--widths-as-errors` 的检查。端口列表中的名称视为显式声明。
+
+生成 SV 的校验错误和位宽警告会映射回原始 `.slip` 语句或声明。文本诊断附带
+源码行和指示符；元编程循环展开时还会显示变量绑定，例如 `i=2`。JSON 诊断的
+`file`、`line`、`column` 使用原始位置，有展开上下文时增加 `expansion` 字段。
+位置映射以生成代码行为单位，不保证定位到表达式内部的具体字符。
+
+完整校验后还会报告以下警告，它们不会被 `--strict` 升级为错误：
+
+- `W_UNDRIVEN`：内部信号被读取，却没有赋值或实例端口驱动。
+- `W_LATCH`：`comb` 中赋值不完整，可能推断出锁存器；优先在块开头给出默认值。
+- `W_REGEX_UNUSED`：正则连接规则未连接任何端口，包括被显式连接或前面的规则覆盖。
+- `W_UNCONNECTED`：实例端口遗漏连接；有意悬空可写 `.port(_)`。
+
+未驱动和锁存器检查由 slang 对展开后的设计进行数据流分析，识别完整 `case`、
+部分位赋值、循环、初始化和实例驱动。仅报告 Slip 生成模块中的分析警告，外部
+IP 仍参与驱动分析和编译校验。它们不能替代仿真；大规模分支和循环的分析有资源上限。
 
 ### 编译正确性与严格模式
 
@@ -334,7 +425,7 @@ slip check -f ip.f design.slip            # 含 filelist
 - 所有模块校验成功后才写出文件。编译错误不会覆盖旧产物或留下部分新产物。
 - 接口信息按依赖顺序跨多层封装传播；参数化维度会结合实例参数覆盖和 localparam 依赖转换到父模块作用域。
 - 电路表达式保留字面量位宽、符号、四态值与赋值上下文。循环展开只替换循环变量，不使用 Python 运算改写电路表达式。
-- 直接或间接参与 Slip 元编程控制的参数，在生成模块中固定为默认值。Slip 内禁止覆盖；生成的 SV 也会在展开时拒绝不同的覆盖值。需要改变这些参数时，应修改源配置后重新生成。只参与普通 RTL 维度的参数仍可覆盖。
+- 参与生成控制的参数可在 Slip 实例上覆盖，不同参数组合生成独立模块，相同组合复用。生成模块中的结构参数固定为该次生成值，并在下游 SV 展开时检查；父参数影响子模块生成结构时也传播该约束。普通 RTL 参数继续保留 SV 覆盖。
 - 推荐在 CI 使用 `--strict`：要求显式声明信号和端口，并将赋值、端口位宽不匹配视为错误。默认模式仍支持带注释的隐式信号；显式单比特声明始终有效。
 
 ### Filelist 格式

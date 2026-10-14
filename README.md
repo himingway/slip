@@ -204,7 +204,6 @@ if (state inside {IDLE, RUN, DONE}) {
 ```slip
 initial {
     clk = 0;
-    forever #5 clk = ~clk;
 }
 ```
 
@@ -285,6 +284,19 @@ child u1 {
 1'b0  // width-prefixed (required for port connections)
 ```
 
+## Extended RTL features
+
+Slip supports concatenated assignments, indexed part selects, multidimensional
+unpacked arrays, falling-edge clocks, enums, packed structs, instance-specific
+module specialization, lazy IP reflection, master/slave signal bundles,
+synthesizable functions and static/runtime assertions. See the
+[feature guide](docs/rtl-features.md) and [combined example](examples/features/slip.conf).
+
+External SystemVerilog interfaces can also be instantiated with named parameters,
+connected as a group, and exposed through modport ports. Field access participates
+in direction, width and driver checks. See [native interfaces](docs/native-interfaces.md)
+and the [parameterized example](examples/native-interface/slip.conf).
+
 ## Installation
 
 ### Native C++ compiler
@@ -310,6 +322,50 @@ With `$HOME/.local/bin` on `PATH`, `slip` runs the C++ compiler.
 
 ## Usage
 
+### Project configuration
+
+Save `slip.conf` in a project directory to run `slip build`, `slip check` or `slip inspect`:
+
+```ini
+entry = rtl/top.slip
+out_dir = build/rtl
+filelist = ip.f
+ip_dir = "external ip"
+strict = true
+```
+
+The format is one `key = value` per line with `#` comments. Paths may be bare,
+double quoted or single quoted; paths containing `#` must be quoted. Double quotes
+support `\"` and `\\` escapes; single quotes preserve backslashes literally.
+All configured paths are resolved relative to the configuration file.
+
+Supported keys are `entry`, `out_dir`, `filelist`, `ip_dir`, `strict`, `no_implicit`
+and `widths_as_errors`. Repeat `filelist` and `ip_dir` to add multiple sources.
+Unknown keys, duplicate scalar keys and invalid values produce `E_CONFIG`.
+Booleans are `true` / `false`. The default output is `build` under the configuration
+directory; without `entry`, provide an input on the command line. Independent
+`no_implicit` and `widths_as_errors` settings override the `strict` shorthand
+regardless of their order in the file.
+
+```bash
+slip build                                  # use ./slip.conf
+slip check --project path/to/slip.conf       # use a project from any directory
+slip inspect --project slip.conf --format=json
+slip build --project slip.conf other.slip -o output
+slip check --project slip.conf --widths-as-warnings
+slip check --project slip.conf --allow-implicit
+```
+
+Automatic discovery checks only the current directory when no input is supplied.
+An explicit input loads project settings only with `--project`. CLI input and
+output paths override configured values; CLI `-ip` / `-f` paths append to project
+lists and are relative to the working directory. CLI check flags apply in order:
+`--strict` enables both checks, `--no-strict` disables both, and `--allow-implicit`
+or `--widths-as-warnings` disables its corresponding check.
+
+Try the [example project](examples/project/slip.conf) with
+`slip check --project examples/project/slip.conf`.
+
 ### Build
 
 ```bash
@@ -327,7 +383,53 @@ slip check design.slip                    # full pipeline (incl. SV validation),
 slip check -ip ip_dir design.slip         # with IP directory
 slip check -f ip.f design.slip            # with filelist
 slip check --strict design.slip           # explicit signals; width mismatches are errors
+slip check --no-implicit design.slip      # reject implicit declarations; keep width warnings
+slip check --widths-as-errors design.slip # reject width mismatches; allow implicit declarations
 ```
+
+### Inspect inferred interfaces and connections
+
+```bash
+slip inspect design.slip                 # ports, widths, signals and instance connections
+slip inspect -f ip.f design.slip          # include external IP
+slip inspect --format=json design.slip   # structured inspection on stdout
+```
+
+`inspect` runs the same whole-design validation as `check` without writing SV.
+Modules are sorted by name. Reports include implicit signals, width provenance,
+parameters fixed by metaprogram expansion, and every instance port's final connection.
+Connection origins distinguish explicit expressions, same-name shorthand and regex
+rules. Intentionally dangling `_` connections are distinct from omitted connections.
+JSON includes signal `type` and `bundles`. Scalar logic/bit ranges and omitted
+connection signals are empty strings; custom types and int retain SV type sizes. An intentional
+dangling connection has `signal: "_"`. Diagnostics go to stderr and can independently
+use `--diagnostics=json`.
+
+### Diagnostics
+
+Default compilation reports `W_IMPLICIT` for implicit signals and ports, including
+their first use, resolved width and possible spelling suggestions. `--no-implicit`
+rejects them; `--strict` combines that check with `--widths-as-errors`. Names listed
+in the module port list count as explicit declarations.
+
+Generated SV validation errors and width warnings map back to the original Slip
+statement or declaration. Text diagnostics show the source line and caret; expanded
+metaprogram loops also show bindings such as `i=2`. JSON diagnostics use the original
+`file`, `line` and `column`, with an additional `expansion` field when applicable.
+Mapping is per generated line, rather than per character within an expression.
+
+Additional warnings after successful validation are not promoted by `--strict`:
+
+- `W_UNDRIVEN`: an internal signal is read without an assignment or instance driver.
+- `W_LATCH`: incomplete `comb` assignments can infer storage; provide defaults or complete branches.
+- `W_REGEX_UNUSED`: a regex rule connects no ports, including rules shadowed by explicit connections or earlier rules.
+- `W_UNCONNECTED`: an instance port is omitted; use `.port(_)` to mark it intentionally unconnected.
+
+Slang analyzes the elaborated RTL for undriven signals and latches, accounting for
+case coverage, bit selects, loops, initialization and instance drivers. These
+analysis warnings cover generated Slip modules; external IP still participates in
+driver analysis and compilation validation. Analysis has resource limits for large
+branches and loops, and does not replace simulation.
 
 ### Compilation guarantees
 
@@ -335,7 +437,7 @@ slip check --strict design.slip           # explicit signals; width mismatches a
 - All modules are validated before any output file is written. A compilation error preserves existing build artifacts.
 - Interfaces propagate from child modules through every wrapper. Parameter-dependent dimensions are translated into the parent scope, including instance overrides and localparam dependencies.
 - Hardware expressions preserve their literal widths, signedness, four-state values, and assignment context. Slip substitutes loop variables without applying Python arithmetic to the resulting hardware expression.
-- Parameters used directly or indirectly by Slip metaprogram controls are fixed at their defaults for that generated module. Overrides are rejected in Slip; generated elaboration checks also reject different values supplied by downstream SV. To change them, change the source configuration and rebuild. Parameters used only for ordinary RTL dimensions remain overridable.
+- Slip instance overrides of generation parameters create distinct specialized modules; identical bindings reuse a module. Each generated module fixes its structural parameters to that generation's values and checks downstream SV overrides. Parent parameters that configure child generation are frozen as well. Ordinary RTL parameters remain overridable.
 - `--strict` requires explicit signal and port declarations and treats assignment/port width mismatches as errors. It is recommended for CI; the default continues to support annotated implicit signals. Normal single-bit declarations are accepted.
 
 ### Filelist Format

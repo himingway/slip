@@ -2,12 +2,16 @@ TEX      := user-manual
 PDF      := $(TEX).pdf
 LATEX    := xelatex
 FLAGS    := -interaction=nonstopmode -halt-on-error
+EXAMPLES := ../../examples/features/design.slip \
+            ../../examples/native-interface/design.slip \
+            ../../examples/native-interface/ip/stream.sv \
+            ../../examples/native-interface/slip.conf
 
 .PHONY: all clean view
 
 all: $(PDF)
 
-$(PDF): $(TEX).tex
+$(PDF): $(TEX).tex $(EXAMPLES)
 	$(LATEX) $(FLAGS) $(TEX)
 	$(LATEX) $(FLAGS) $(TEX)
 	$(LATEX) $(FLAGS) $(TEX)

@@ -99,6 +99,8 @@ Functions::Functions(const std::vector<Function>& values) {
     const std::set<std::string> methods = {"upper", "lower", "reverse", "replace", "strip", "lstrip", "rstrip", "split", "rsplit", "splitlines", "startswith", "endswith", "find", "rfind", "index", "count", "join", "zfill", "rjust", "ljust", "title", "capitalize", "swapcase", "casefold", "isdigit", "isalpha", "isalnum", "isnumeric", "islower", "isupper", "removeprefix", "removesuffix"};
     for (const auto& value : values) walk_expression(value.result, [&](const Expr& expr) {
         if (auto call = std::get_if<Call>(&expr.node); call && !helpers.contains(call->name) && !definitions.contains(call->name)) throw Error(expr.loc, "E_FUNCTION", "unknown function '" + call->name + "'");
+        if (auto method = std::get_if<Method>(&expr.node); method && method->field) throw Error(expr.loc, "E_FUNCTION", "field access is only supported for RTL data");
+        if (auto select = std::get_if<Select>(&expr.node); select && !select->indexed.empty()) throw Error(expr.loc, "E_FUNCTION", "indexed part selects are only supported for RTL data");
         if (auto method = std::get_if<Method>(&expr.node); method && !methods.contains(method->name)) throw Error(expr.loc, "E_FUNCTION", "method '." + method->name + "()' is not allowed in defun");
     });
 }

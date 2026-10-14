@@ -3,7 +3,7 @@
 **全称**：Streamlined Language for IC Prototyping
 **状态**：C++ 主实现
 **面向读者**：Slip 语言用户与编译器开发者
-**最后更新**：2026-10-12
+**最后更新**：2026-10-15
 
 ---
 
@@ -77,7 +77,7 @@ Python 实现保留在 [`python-reference` 分支](https://github.com/himingway/
 ```ebnf
 CompilationUnit ::= { TopLevelItem }
 
-TopLevelItem ::= ModuleDecl | FuncDef | IncludeDirective
+TopLevelItem ::= ModuleDecl | FuncDef | IncludeDirective | TypeDecl | RTLFunction | BundleSchema
 
 IncludeDirective ::= "include" STRING ";"
 
@@ -116,7 +116,7 @@ AssignStmt ::= ["assign"] Lvalue "=" Expr ";"
             | ["assign"] Lvalue ("+=" | "-=" | "*=" | "/=" | "%=" | "&=" | "|=" | "^=" | "<<=" | ">>=" | "<<<=" | ">>>=") Expr ";"
                                                                          (* 复合赋值，在解析时脱糖 *)
 
-SeqBlock     ::= "seq" "(" IDENT [ "," ("pos" | "neg") ":" IDENT ] ")" BlockStmt
+SeqBlock     ::= "seq" "(" [ ("pos" | "neg") ":" ] IDENT [ "," ("pos" | "neg") ":" IDENT ] ")" BlockStmt
 CombBlock    ::= "comb" BlockStmt
 InitialBlock ::= "initial" BlockStmt
 
@@ -146,7 +146,8 @@ Connection ::= "." IDENT [ "(" Expr ")" ]          (* Expr 可为 '0, '1, _ 或�
 
 BlockStmt ::= "{" { Statement } "}"
 
-Lvalue ::= IDENT { "[" Expr "]" | "[" Expr ":" Expr "]" }
+Lvalue ::= IDENT { "." IDENT | "[" Expr "]" | "[" Expr (":" | "+:" | "-:") Expr "]" }
+         | "{" Lvalue { "," Lvalue } "}"
 
 Expr ::= (* 表达式：由 Pratt 解析器实现，涵盖所有运算符。
            特殊构造：
@@ -156,6 +157,15 @@ Expr ::= (* 表达式：由 Pratt 解析器实现，涵盖所有运算符。
            - 集合成员：x inside {v1, v2, ...}
            - _ 仅在连接中使用，'0/'1 为特殊常量 *)
 ```
+
+扩展的类型、函数、断言与总线语法及组合示例见 [RTL 功能说明](rtl-features.md)。
+`Statement` 还支持这些声明和语句；`return` 仅位于函数内，`static_assert` 位于模块层。
+
+原生外部 SV interface 使用 `interface Type #(.P(value)) name { .port(signal) };`
+声明内部实例，使用 `interface Type.modport name;` 声明模块端口。
+实例可省略参数和构造连接；端口从调用方继承配置。字段通过 `name.field` 访问，
+整组连接使用 `.port(name)` 或 `.port(name.modport)`。
+语义、检查规则与边界见 [原生 interface 说明](native-interfaces.md)。
 
 ### 3.3 语义说明
 
@@ -273,7 +283,7 @@ Expr ::= (* 表达式：由 Pratt 解析器实现，涵盖所有运算符。
 *   元编程控制表达式由 slang 按 SystemVerilog 常量语义求值，保留参数默认表达式的位宽和声明顺序。
 *   位宽、索引中的纯十进制常量运算可以折叠；含参数的表达式保留。不会进行 `x * 0 → 0` 等改变四态语义的代数化简。
 *   电路赋值、条件、端口连接中的表达式只替换循环变量，保留原来的类型、位宽和赋值上下文，由 SystemVerilog 工具计算。
-*   参与元编程控制的参数及其参数依赖固定为生成时默认值，禁止在实例化时覆盖。生成的 SV 带展开期 `$error` 检查，防止下游覆盖不同的值。普通 RTL 参数仍可覆盖。
+*   Slip 实例可覆盖生成参数，编译器按有效参数绑定创建确定性命名的特化模块并复用相同绑定；嵌套封装与函数内生成控制同样参与特化。每个生成模块固定本次使用的结构参数，并在 SV 展开时防止不一致覆盖；普通 RTL 参数保留覆盖。
 
 **模板标识符**：标识符中可包含反引号循环变量（如 `stage_`i`、`a`i_`j`）。词法分析器在合并阶段将其识别为单一 Token，展开时替换变量部分（`stage_`i → stage_0, stage_1, …）。
 
@@ -396,7 +406,7 @@ module reverse #(param W=8) (clk, in, out) {
 
 内部 `Backend` 保留 IP 的源码管理器和语法树，从统一的 slang 编译上下文中
 提取模块参数、`localparam`、端口方向、位宽和数组维度。非顶层模块也可反射。
-外部 SV 接口端口和类型参数会明确报错。
+首先建立 IP 定义索引，仅反射实际实例化的模块。实际连接到 Slip 的外部 SV 接口端口和类型参数仍会明确报错；未使用的定义不因反射限制阻断编译。
 
 ### 9.2 Filelist 解析
 
@@ -429,18 +439,40 @@ module reverse #(param W=8) (clk, in, out) {
 ## 10. 命令行接口
 
 ```
-slip build [-o <out_dir>] [-ip <ip_dirs>] [-f <filelists>] <file.slip>
-slip check [-ip <ip_dirs>] [-f <filelists>] <file.slip>
+slip build [-o <out_dir>] [-ip <ip_dirs>] [-f <filelists>] [--project <config>] [file.slip]
+slip check [-ip <ip_dirs>] [-f <filelists>] [--project <config>] [file.slip]
+slip inspect [-ip <ip_dirs>] [-f <filelists>] [--format=text|json] [--project <config>] [file.slip]
 ```
 
 参数：
 - `-o <out_dir>` — 输出目录（默认 `./build`）
 - `-ip <ip_dir>` — IP 源目录，可多次指定，递归扫描 `*.sv`/`*.v`
 - `-f <file.f>` — VCS 格式 filelist 文件，可多次指定
+- `--project <config>` — 读取项目配置
 - `--strict` — 显式声明信号，位宽不匹配视为错误
+- `--no-strict` — 关闭两项严格检查
+- `--allow-implicit` — 允许隐式声明
+- `--widths-as-warnings` — 将位宽不匹配保留为警告
+- `--no-implicit` — 仅禁止隐式声明，保留位宽警告
+- `--widths-as-errors` — 仅将位宽不匹配视为错误
+- `--format=text|json` — `inspect` 的输出格式，默认为 text
 - `--stdout` — `build` 的生成结果写到标准输出
 - `--diagnostics=json` — 逐行 JSON 诊断
 - 输入文件 `-` — 从标准输入读取
+
+### 10.1 项目配置
+
+省略输入文件时，读取当前目录的 `slip.conf`，不搜索父目录。显式指定输入文件时，
+只有传入 `--project` 才读取配置。配置为每行一个 `key = value`，支持 `#` 注释和
+单、双引号路径；双引号支持转义引号与反斜杠，单引号保留字面内容。
+
+支持 `entry`、`out_dir`、`filelist`、`ip_dir`、`strict`、`no_implicit`、
+`widths_as_errors`。`filelist` 和 `ip_dir` 可重复，其他重复键、未知键或非法值
+报 `E_CONFIG`。布尔值为 `true` / `false`。配置中的相对路径以配置文件目录为基准。
+默认输出为该目录下的 `build`。无 `entry` 时需从命令行提供输入文件。
+
+独立检查设置优先于 `strict` 简写，不受键顺序影响。命令行输入与 `-o` 覆盖配置，
+`-ip` / `-f` 追加到配置列表；命令行路径以当前目录为基准，检查开关按出现顺序生效。
 
 文件加载优先级：
 1. `-f filelist.f`（最高优先级，按文件内顺序）
@@ -455,9 +487,28 @@ slip check [-ip <ip_dirs>] [-f <filelists>] <file.slip>
 例如 `E_PARSE`、`E_CONSTANT`、`E_CONNECTION`、`E_MULTIPLE_DRIVERS`、`E_SV`。
 警告保存在 `slip::Result::warnings`；CLI 统一输出到 stderr。
 
-退出码：成功为 0，编译失败为 1，CLI 参数错误为 2。
+退出码：成功为 0，编译或 I/O 失败为 1，CLI 参数或项目配置格式错误为 2。
 `--diagnostics=json` 输出包含 `severity`、`code`、`file`、`line`、`column`
 和 `message` 字段的逐行 JSON。
+
+默认模式以 `W_IMPLICIT` 提示隐式信号或隐式端口及其最终位宽；有唯一的相近显式
+名称时附带拼写建议。`--strict` 同时启用 `--no-implicit` 与 `--widths-as-errors`。
+生成 SV 的校验错误与位宽警告通过生成缓冲区及行号映射回原始 Slip 语句或声明；
+文本输出包含源码行和指示符，JSON 的位置字段使用原始位置。元编程循环绑定保存
+在可选的 `expansion` 字段中。位置映射粒度为生成代码行。
+
+`inspect` 在完整校验后输出模块的端口、信号、类型、总线分组、固定参数和实例端口连接，不写出 SV。
+实例连接包含方向、位宽及来源（显式表达式、同名简写或匹配的正则规则）。JSON
+结果中的空 `width` 对 logic/bit 表示单比特，自定义类型和 int 以 `type` 决定大小；空 `signal` 表示未连接，`_` 表示有意悬空。
+
+完整校验后，通过 slang 的数据流分析报告 `W_UNDRIVEN`（内部信号无驱动）和
+`W_LATCH`（组合逻辑赋值不完整）。仅报告生成的 Slip 模块中的分析警告，外部 IP
+参与驱动分析和校验。分析识别完整 case、部分位赋值、循环、初始化及实例驱动；
+分支和循环分析分别有 10,000 步的资源上限，不能替代仿真。
+
+正则规则未建立任何连接时报告 `W_REGEX_UNUSED`，包括规则被显式连接或前面的规则
+覆盖的情况。遗漏实例端口连接报告 `W_UNCONNECTED`；显式 `.port(_)` 不报告该警告。
+本地模块遗漏输入连接仍为编译错误。上述警告不受 `--strict` 升级影响。
 
 默认资源限制为每模块 10,000 次元编程循环迭代、100,000 条展开语句、
 128 层 include、每源码 1,000,000 个 token。循环值重复、整数溢出或达到

@@ -7,14 +7,25 @@
 
 namespace slip {
 using Environment = std::vector<std::pair<std::string, std::string>>;
+using SourceMaps = std::map<std::string, std::vector<Location>>;
 struct InterfacePort {
     std::string name, direction, width, array;
     bool is_signed = false;
+    bool native = false;
+    std::string interface_type = {}, modport = {};
 };
 struct Interface {
     std::vector<NamedValue> parameters, localparams;
     std::vector<InterfacePort> ports;
     std::set<std::string> frozen;
+    std::map<std::string, std::vector<std::string>> bundles;
+    std::map<std::string, std::string> bundle_types;
+};
+struct NativeInterface {
+    Interface constructor;
+    std::vector<InterfacePort> fields;
+    std::map<std::string, std::map<std::string, std::string>> modports;
+    std::map<std::string, std::string> unsupported_modports;
 };
 
 class Backend {
@@ -24,8 +35,14 @@ public:
     Backend(const Backend&) = delete;
     Backend& operator=(const Backend&) = delete;
     std::map<std::string, Interface> ips;
+    std::set<std::string> ip_names;
+    std::set<std::string> interface_names;
+    std::map<std::string, NativeInterface> native_interfaces;
+    const Interface* reflect(const std::string& name);
+    const NativeInterface& reflect_native(const std::string& name, Location loc);
     std::int64_t constant(std::string_view expression, const Environment& environment, Location loc);
-    void validate(const std::map<std::string, std::string>& modules, bool strict, std::vector<Diagnostic>& warnings);
+    void validate(const std::map<std::string, std::string>& modules, const SourceMaps& source_maps,
+                  bool widths_as_errors, std::vector<Diagnostic>& warnings, bool native_interfaces = false);
 private:
     struct Impl;
     std::unique_ptr<Impl> impl;

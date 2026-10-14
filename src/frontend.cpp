@@ -81,7 +81,8 @@ bool alnum(char ch) { return alpha(ch) || digit(ch); }
 const std::set<std::string> keywords = {
     "module", "param", "localparam", "logic", "signed", "assign", "seq", "comb",
     "initial", "pos", "neg", "if", "else", "for", "case", "casez", "casex",
-    "default", "inside", "defun", "return", "include"
+    "default", "inside", "defun", "return", "include", "typedef", "enum", "struct", "packed",
+    "function", "automatic", "assert", "static_assert", "bundle", "master", "slave", "bus", "input", "output", "inout", "int", "bit", "interface"
 };
 std::vector<Token> lex(std::string_view source, const std::string& filename) {
     std::vector<Token> tokens;
@@ -93,7 +94,7 @@ std::vector<Token> lex(std::string_view source, const std::string& filename) {
     };
     const std::vector<std::string> operators = {
         "<<<=", ">>>=", "<<=", ">>=", "===", "!==", "<<<", ">>>", "=>", "<=", ">=",
-        "==", "!=", "<<", ">>", "**", "&&", "||", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^="
+        "+:", "-:", "==", "!=", "<<", ">>", "**", "&&", "||", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^="
     };
     while (pos < source.size()) {
         if (std::isspace(static_cast<unsigned char>(source[pos]))) { advance(); continue; }
@@ -228,6 +229,11 @@ class Parser {
         if (meta) tok.text.erase(0, 1);
         return tok;
     }
+    Token member_name() {
+        auto tok = take();
+        if (tok.kind != TokenKind::name) throw Error(tok.loc, "E_PARSE", "expected member identifier, got '" + tok.text + "'");
+        return tok;
+    }
     std::vector<ExprPtr> args() {
         expect("(");
         std::vector<ExprPtr> values;
@@ -257,7 +263,7 @@ class Parser {
             while (eat(",")) parts.push_back(expr());
             expect("}"); return expression(tok.loc, Concat{std::move(parts)});
         }
-        if ((tok.kind == TokenKind::number || tok.text == "signed" || tok.text == "unsigned") && eat("'")) {
+        if ((tok.kind == TokenKind::number || tok.kind == TokenKind::name) && eat("'")) {
             expect("("); auto value = expr(); expect(")");
             return expression(tok.loc, Cast{tok.text + "'", value});
         }
@@ -265,7 +271,7 @@ class Parser {
             return expression(tok.loc, Literal{tok.text, tok.kind == TokenKind::string});
         if (tok.kind == TokenKind::meta && tok.text != "`for" && tok.text != "`if" && tok.text != "`else")
             return expression(tok.loc, Identifier{tok.text.substr(1), true});
-        if (tok.kind == TokenKind::name && !keywords.contains(tok.text) && tok.text != "unsigned")
+        if (tok.kind == TokenKind::name && (!keywords.contains(tok.text) || (function_context && tok.text == "int")) && tok.text != "unsigned")
             return expression(tok.loc, Identifier{tok.text});
         throw Error(tok.loc, "E_PARSE", "unexpected token '" + tok.text + "' in expression");
     }
@@ -285,13 +291,57 @@ class Parser {
         }
         expect("."); auto tok = name(); expect("("); auto value = expr(); expect(")"); return {tok.text, value};
     }
-    Assignment assignment() {
-        auto target = expression(peek().loc, Identifier{name().text});
+    bool assignable(const ExprPtr& value) {
+        if (auto id = std::get_if<Identifier>(&value->node)) return id->name != "_";
+        if (auto select = std::get_if<Select>(&value->node)) return assignable(select->base);
+        if (auto field = std::get_if<Method>(&value->node)) return field->field && assignable(field->object);
+        if (auto group = std::get_if<Paren>(&value->node)) return assignable(group->value);
+        if (auto concat = std::get_if<Concat>(&value->node)) return std::all_of(concat->parts.begin(), concat->parts.end(), [&](auto& part) { return assignable(part); });
+        return false;
+    }
+    SignalDecl declaration() {
+        SignalDecl value;
+        if (peek().text == "input" || peek().text == "output" || peek().text == "inout") value.direction = take().text;
+        value.is_signed = eat("signed");
+        if (peek().text == "logic" || peek().text == "bit" || peek().text == "int" ||
+            (peek().kind == TokenKind::name && peek(1).kind == TokenKind::name)) value.type = take().text;
+        if (eat("signed")) value.is_signed = true;
+        if (peek().text == "[") value.width = width();
+        value.name = name().text;
         while (eat("[")) {
-            auto first = expr(); ExprPtr last; bool slice = eat(":");
-            if (slice) last = expr();
-            expect("]"); target = expression(target->loc, Select{target, first, last, slice});
+            auto first = expr(); expect(":"); auto last = expr(); expect("]");
+            if (!value.array_first) { value.array_first = first; value.array_last = last; }
+            else value.dimensions.emplace_back(first, last);
         }
+        return value;
+    }
+    std::string type_text(const SignalDecl& value) {
+        auto text = value.type + (value.is_signed ? " signed" : "");
+        if (value.width) {
+            if (auto range = std::get_if<Binary>(&value.width->node); range && range->op == ":")
+                text += " [" + to_sv(range->left) + ":" + to_sv(range->right) + "]";
+            else text += " [" + to_sv(value.width) + "-1:0]";
+        }
+        return text;
+    }
+    Statement type_declaration();
+    RTLFunction hardware_function() {
+        eat("automatic");
+        RTLFunction function; function.result = declaration(); expect("(");
+        if (!eat(")")) {
+            do {
+                auto arg = declaration();
+                if (!arg.direction.empty() && arg.direction != "input") throw Error(peek().loc, "E_FUNCTION", "RTL function arguments must be inputs");
+                function.arguments.push_back(std::move(arg));
+            } while (eat(","));
+            expect(")");
+        }
+        function.body = block();
+        return function;
+    }
+    Assignment assignment() {
+        auto target = expr(14);
+        if (!assignable(target)) throw Error(target->loc, "E_PARSE", "assignment requires an assignable target");
         auto op = take();
         auto value = expr();
         if (op.text != "=" && op.text != "<=") {
@@ -304,6 +354,32 @@ class Parser {
     Statement statement() {
         Depth guard(nesting, peek().loc);
         auto start = peek();
+        if (peek().text == "typedef" || peek().text == "enum" || peek().text == "struct") return type_declaration();
+        if (eat("function")) return {start.loc, hardware_function()};
+        if (eat("return")) { auto value = expr(); expect(";"); return {start.loc, Return{value}}; }
+        if (peek().text == "assert" || peek().text == "static_assert") {
+            bool compile_time = take().text == "static_assert"; expect("("); auto condition = expr(); std::string message;
+            if (eat(",")) { auto text = take(); if (text.kind != TokenKind::string) throw Error(text.loc, "E_PARSE", "assertion message must be a string"); message = text.text; }
+            expect(")"); expect(";"); return {start.loc, Assertion{condition, message, compile_time}};
+        }
+        if (peek().text == "master" || peek().text == "slave" || peek().text == "bus" || peek().text == "interface") {
+            BundleUse use; use.role = take().text; use.native = use.role == "interface"; use.schema = name().text;
+            if (use.native && eat(".")) use.modport = member_name().text;
+            if (eat("#")) { expect("("); if (!eat(")")) { do { use.parameters.push_back(parameter(false)); } while(eat(",")); expect(")"); } }
+            use.name = name().text;
+            if (use.native && peek().text == "[") throw Error(peek().loc, "E_INTERFACE", "interface instance arrays are not supported");
+            if (use.native && eat("{")) {
+                if (!eat("}")) {
+                    do {
+                        expect("."); Connection connection; connection.port = member_name().text;
+                        if (eat("(")) { connection.value = expr(); expect(")"); }
+                        use.connections.push_back(std::move(connection));
+                    } while (eat(","));
+                    expect("}");
+                }
+            }
+            expect(";"); return {start.loc, std::move(use)};
+        }
         if (eat("localparam")) {
             Body declarations;
             do { auto tok = name(); expect("="); declarations.push_back({tok.loc, LocalParam{tok.text, expr()}}); } while (eat(","));
@@ -314,11 +390,13 @@ class Parser {
             auto kind = take().text;
             Process process{kind == "seq" ? ProcessKind::sequential : kind == "comb" ? ProcessKind::combinational : ProcessKind::initial, {}, {}, {}, {}};
             if (kind == "seq") {
-                expect("("); process.clock = name().text;
+                expect("(");
+                if (peek().text == "pos" || peek().text == "neg") { process.clock_edge = take().text; expect(":"); }
+                process.clock = to_sv(expr(14));
                 if (eat(",")) {
                     auto edge = take();
                     if (edge.text != "pos" && edge.text != "neg") throw Error(edge.loc, "E_PARSE", "expected pos or neg reset edge");
-                    process.edge = edge.text; expect(":"); process.reset = name().text;
+                    process.edge = edge.text; expect(":"); process.reset = to_sv(expr(14));
                 }
                 expect(")");
             }
@@ -359,7 +437,7 @@ class Parser {
             return {start.loc, Case{kind, value, std::move(arms)}};
         }
         if (peek().kind == TokenKind::name && !keywords.contains(peek().text) &&
-            ((peek(1).kind == TokenKind::name && !keywords.contains(peek(1).text)) || peek(1).text == "#")) {
+            ((peek(1).kind == TokenKind::name && !keywords.contains(peek(1).text) && peek(2).text == "{") || peek(1).text == "#")) {
             Instance instance;
             instance.module = name().text;
             if (eat("#")) {
@@ -379,7 +457,7 @@ class Parser {
                         connection.pattern = pattern.text.substr(1, pattern.text.size() - 2);
                         connection.replacement = replacement.text.substr(1, replacement.text.size() - 2);
                     } else {
-                        expect("."); connection.port = name().text;
+                        expect("."); connection.port = member_name().text;
                         if (eat("(")) { connection.value = expr(); expect(")"); }
                     }
                     instance.connections.push_back(std::move(connection));
@@ -388,15 +466,11 @@ class Parser {
             }
             expect(";"); return {start.loc, std::move(instance)};
         }
+        if (peek().text == "{") return {start.loc, assignment()};
         if (peek().kind == TokenKind::name && !keywords.contains(peek().text) &&
-            (peek(1).text == "=" || peek(1).text == "<=" || peek(1).text == "[" ||
+            (peek(1).text == "." || peek(1).text == "=" || peek(1).text == "<=" || peek(1).text == "[" ||
              (peek(1).text.size() > 1 && peek(1).text.back() == '='))) return {start.loc, assignment()};
-        SignalDecl signal;
-        signal.is_signed = eat("signed"); eat("logic");
-        if (peek().text == "[") signal.width = width();
-        signal.name = name().text;
-        if (eat("[")) { signal.array_first = expr(); expect(":"); signal.array_last = expr(); expect("]"); }
-        expect(";"); return {start.loc, std::move(signal)};
+        auto signal = declaration(); expect(";"); return {start.loc, std::move(signal)};
     }
 public:
     Parser(std::string_view source, const std::string& filename) : tokens(lex(source, filename)) {}
@@ -413,9 +487,11 @@ public:
             if (tok.text == "[" && min_precedence <= 14) {
                 take(); ExprPtr first, last;
                 if (peek().text != ":") first = expr();
-                bool slice = eat(":");
+                std::string indexed;
+                if (peek().text == "+:" || peek().text == "-:") indexed = take().text;
+                bool slice = !indexed.empty() || eat(":");
                 if (slice && peek().text != "]") last = expr();
-                expect("]"); left = expression(tok.loc, Select{left, first, last, slice}); continue;
+                expect("]"); left = expression(tok.loc, Select{left, first, last, slice, indexed}); continue;
             }
             if (tok.text == "(" && min_precedence <= 14) {
                 auto id = std::get_if<Identifier>(&left->node);
@@ -423,7 +499,8 @@ public:
                 left = expression(tok.loc, Call{id->name, args()}); continue;
             }
             if (tok.text == "." && min_precedence <= 14) {
-                take(); auto method = name(); left = expression(tok.loc, Method{left, method.text, args()}); continue;
+                take(); auto method = member_name(); bool field = peek().text != "(";
+                left = expression(tok.loc, Method{left, method.text, field ? std::vector<ExprPtr>{} : args(), field}); continue;
             }
             int level = precedence(tok.text);
             if (!level || level < min_precedence) break;
@@ -447,6 +524,20 @@ public:
                 auto path = take();
                 if (path.kind != TokenKind::string) throw Error(path.loc, "E_PARSE", "expected include path");
                 expect(";"); result.includes.push_back({tok.loc, unquote(path.text)}); continue;
+            }
+            if (tok.text == "typedef" || tok.text == "enum" || tok.text == "struct" || tok.text == "function") {
+                --pos; result.declarations.push_back(statement()); continue;
+            }
+            if (tok.text == "bundle") {
+                BundleSchema schema; schema.loc = tok.loc; schema.name = name().text;
+                if (eat("#")) { expect("("); if (!eat(")")) { do { schema.parameters.push_back(parameter(true)); } while(eat(",")); expect(")"); } }
+                expect("{");
+                while (!eat("}")) {
+                    auto field = declaration(); expect(";");
+                    if (field.direction != "input" && field.direction != "output") throw Error(tok.loc, "E_BUNDLE", "bundle fields require input or output directions as seen by a master");
+                    schema.fields.push_back(std::move(field));
+                }
+                eat(";"); result.bundles.push_back(std::move(schema)); continue;
             }
             if (tok.text == "defun") {
                 Function function{tok.loc, name().text, {}, {}};
@@ -480,6 +571,51 @@ public:
     }
 };
 
+Statement Parser::type_declaration() {
+    auto loc = peek().loc;
+    bool alias = eat("typedef");
+    TypeDecl type;
+    std::string body;
+    if (eat("enum")) {
+        SignalDecl base; base.type = "int";
+        if (peek().text == "logic" || peek().text == "bit" || peek().text == "int") base.type = take().text;
+        if (eat("signed")) base.is_signed = true;
+        if (peek().text == "[") { base.width = width(); if (base.type == "int") base.type = "logic"; }
+        expect("{"); std::vector<std::string> entries; ExprPtr previous;
+        do {
+            auto item = name();
+            ExprPtr value;
+            if (eat("=")) value = expr();
+            else value = previous ? expression(item.loc, Binary{"+", previous, expression(item.loc, Literal{"1"})}) : expression(item.loc, Literal{"0"});
+            entries.push_back(item.text + " = " + to_sv(value));
+            type.constants.emplace_back(item.text, value);
+            previous = expression(item.loc, Identifier{item.text});
+        } while (eat(",") && peek().text != "}");
+        expect("}");
+        body = "enum " + type_text(base) + " {" + join(entries, ", ") + "}";
+    } else if (eat("struct")) {
+        expect("packed"); expect("{"); std::vector<std::string> fields;
+        while (!eat("}")) {
+            auto field = declaration(); expect(";");
+            if (!field.direction.empty() || field.array_first) throw Error(loc, "E_TYPE", "packed struct fields must be packed data without port directions");
+            fields.push_back(type_text(field) + " " + field.name + ";");
+        }
+        if (fields.empty()) throw Error(loc, "E_TYPE", "packed struct requires at least one field");
+        body = "struct packed {" + join(fields, " ") + "}";
+    } else {
+        if (!alias) throw Error(loc, "E_PARSE", "expected enum or struct");
+        auto value = declaration(); expect(";");
+        type.name = value.name; type.sv = "typedef " + type_text(value) + " " + value.name + ";";
+        return {loc, std::move(type)};
+    }
+    auto last = name(); expect(";");
+    type.name = alias ? last.text : "__slip_type_" + std::to_string(loc.line) + "_" + std::to_string(loc.column);
+    type.sv = "typedef " + body + " " + type.name + ";";
+    if (alias) return {loc, std::move(type)};
+    SignalDecl signal; signal.name = last.text; signal.type = type.name;
+    return {loc, Group{Body{{loc, std::move(type)}, {last.loc, std::move(signal)}}}};
+}
+
 int expression_level(const ExprPtr& expr) {
     if (auto binary = std::get_if<Binary>(&expr->node)) return precedence(binary->op);
     if (std::holds_alternative<Ternary>(expr->node)) return 1;
@@ -495,14 +631,14 @@ std::string serialize(const ExprPtr& expr, int context) {
     auto text = std::visit(Overloaded{
         [](const Identifier& node) { return (node.meta ? "`" : "") + node.name; },
         [](const Literal& node) { return node.text; },
-        [&](const Unary& node) { return node.op + sv(node.operand, 13); },
+        [&](const Unary& node) { return node.op + sv(node.operand, 14); },
         [&](const Binary& node) { return sv(node.left, precedence(node.op)) + " " + node.op + " " + sv(node.right, precedence(node.op) + 1); },
         [&](const Ternary& node) { return sv(node.condition, 2) + " ? " + sv(node.yes) + " : " + sv(node.no); },
-        [&](const Select& node) { return sv(node.base, 99) + "[" + sv(node.first) + (node.slice ? ":" + sv(node.last) : "") + "]"; },
+        [&](const Select& node) { return sv(node.base, 99) + "[" + sv(node.first) + (node.slice ? (node.indexed.empty() ? ":" : " " + node.indexed + " ") + sv(node.last) : "") + "]"; },
         [&](const Concat& node) { return "{" + args(node.parts) + "}"; },
         [&](const Repeat& node) { return "{" + sv(node.count) + "{" + sv(node.value) + "}}"; },
         [&](const Call& node) { return node.name + "(" + args(node.args) + ")"; },
-        [&](const Method& node) { return sv(node.object) + "." + node.name + "(" + args(node.args) + ")"; },
+        [&](const Method& node) { return sv(node.object) + "." + node.name + (node.field ? "" : "(" + args(node.args) + ")"); },
         [&](const Paren& node) { return "(" + sv(node.value) + ")"; },
         [&](const Cast& node) { return node.type + "(" + sv(node.value) + ")"; }
     }, expr->node);

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "slip/ast.hpp"
+#include "slip/ir.hpp"
 #include <cstddef>
 #include <filesystem>
 #include <map>
@@ -13,11 +13,16 @@ struct Options {
     std::size_t max_meta_iterations = 10000;
     std::size_t max_expanded_statements = 100000;
     std::size_t max_include_depth = 128;
+    bool no_implicit = false;
+    bool widths_as_errors = false;
+    bool collect_inspection = false;
 };
 struct Diagnostic { Location loc; std::string code, message; };
 struct Result {
     std::map<std::string, std::string> modules;
     std::vector<Diagnostic> warnings;
+    // Populated on request, after instance resolution and whole-design validation.
+    std::map<std::string, IRModule> inspection;
 };
 
 // Every call owns its complete state; independent compilations can run concurrently.
