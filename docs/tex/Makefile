@@ -5,7 +5,8 @@ FLAGS    := -interaction=nonstopmode -halt-on-error
 EXAMPLES := ../../examples/features/design.slip \
             ../../examples/native-interface/design.slip \
             ../../examples/native-interface/ip/stream.sv \
-            ../../examples/native-interface/slip.conf
+            ../../examples/native-interface/slip.conf \
+            ../../examples/interop/design.slip
 
 .PHONY: all clean view
 

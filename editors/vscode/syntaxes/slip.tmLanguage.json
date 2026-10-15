@@ -1,0 +1,25 @@
+{
+  "name": "Slip", "scopeName": "source.slip",
+  "patterns": [
+    { "include": "#comments" }, { "include": "#strings" },
+    { "name": "meta.attribute.slip", "begin": "\\(\\*", "end": "\\*\\)", "patterns": [{ "include": "#strings" }, { "include": "#numbers" }] },
+    { "name": "keyword.control.metaprogram.slip", "match": "`(?:for|if|else)\\b" },
+    { "name": "variable.other.metaprogram.slip", "match": "`[A-Za-z_][A-Za-z0-9_]*" },
+    { "name": "storage.type.slip", "match": "\\b(?:module|logic|bit|int|signed|unsigned|input|output|inout|typedef|enum|struct|packed|param|localparam|type|bundle|interface|master|slave|bus)\\b" },
+    { "name": "keyword.control.slip", "match": "\\b(?:seq|comb|initial|pos|neg|if|else|for|case|casez|casex|default|inside|return|assert|static_assert|include)\\b" },
+    { "name": "storage.type.function.slip", "match": "\\b(?:function|automatic|defun)\\b" },
+    { "name": "support.function.system.slip", "match": "\\$[A-Za-z_][A-Za-z0-9_]*" },
+    { "include": "#numbers" },
+    { "name": "entity.name.function.slip", "match": "\\b[A-Za-z_][A-Za-z0-9_]*(?=\\s*\\()" }
+  ],
+  "repository": {
+    "comments": { "patterns": [
+      { "name": "comment.line.double-slash.slip", "begin": "//", "end": "$" },
+      { "name": "comment.block.slip", "begin": "/\\*", "end": "\\*/", "patterns": [{ "include": "#comments" }] }
+    ] },
+    "strings": { "name": "string.quoted.double.slip", "begin": "\"", "end": "\"", "patterns": [{ "name": "constant.character.escape.slip", "match": "\\\\." }] },
+    "numbers": { "patterns": [
+      { "name": "constant.numeric.slip", "match": "(?:\\b[0-9][0-9_]*)?'[sS]?[bBoOdDhH][0-9a-fA-F_xXzZ?]+|\\b[0-9][0-9_]*\\b|'[01xXzZ]" }
+    ] }
+  }
+}

@@ -8,6 +8,8 @@
 
 > 开发过程中参考的 IEEE 标准文档（1364-2005、1800-2017）不再随仓库分发，请从 [IEEE Xplore](https://ieeexplore.ieee.org/) 获取。
 
+[工程构建、配置组合、告警策略与调试](docs/practical-projects.md) · [VS Code 与 LSP](editors/vscode/README.md) · [Vim / Neovim](editors/vim/README_CN.md) · [SV 互操作示例](examples/interop/slip.conf)
+
 ## 概述
 
 Slip 是一种简洁的硬件描述语言，本质上是 SystemVerilog 的语法糖。它为常见的硬件设计模式提供了精简的语法——信号声明、组合与时序逻辑、带有正则端口映射的模块实例化、编译时元编程——同时生成干净、可读的 SystemVerilog 输出。
@@ -17,7 +19,7 @@ Slip 的主实现是 C++20 编译器，直接链接 [slang](https://github.com/M
 ## 特性
 
 - **端口方向自动推断** — 无需 `input`/`output` 关键字，方向根据信号使用方式推导
-- **隐式信号声明** — 被引用但未声明为端口或实例的名称自动成为 `logic` 信号，带 `// implicit, no width` 注释便于 review
+- **隐式信号声明** — 自动创建的端口和内部信号标记 `implicit port` / `implicit logic`，同时注明推断方向、默认类型和位宽来源
 - **Instance 端口位宽推断** — 连接到 instance 端口的信号自动继承目标端口位宽，生成 `// width from X.Y` 注释
 - **时序逻辑块** — `seq (clk, neg: rst_n) { ... }` 生成 `always_ff`，自动将阻塞赋值转为非阻塞
 - **组合逻辑块** — `comb { ... }` 生成 `always_comb`
@@ -292,6 +294,15 @@ child u1 {
 并保留方向、位宽与驱动检查。见 [原生 interface 说明](docs/native-interfaces.md) 和
 [参数化示例](examples/native-interface/slip.conf)。
 
+### 生成声明的注释
+
+生成的 SV 使用 `implicit port` / `implicit logic` 标记自动创建的端口和内部信号。
+已列出名称、但方向由编译器推断的端口标记 `inferred direction: input/output/inout`；
+省略基本类型的声明标记 `inferred type: logic`，并保留 `no width` 和
+`width from module.port` 信息。注释放在对应声明前，非 ANSI 端口也在实际声明处标注。
+`inspect` 同步显示来源，JSON 增加 `direction_inferred`、`type_inferred` 字段。
+端口列表中的名称仍视为显式声明，严格检查规则保持原有含义。
+
 ## 安装
 
 ### 原生 C++ 编译器
@@ -316,6 +327,15 @@ cmake --install build/release --prefix "$HOME/.local"
 ```
 
 确保 `$HOME/.local/bin` 在 `PATH` 中，之后 `slip` 即为 C++ 主程序。
+
+### 发布安装包
+
+[GitHub Releases](https://github.com/himingway/slip/releases) 提供 Linux x86_64
+安装包，包含 `bin/slip`、可选的 Python `bin/slip-lsp`，以及 `share/slip`
+下的编辑器源码、文档和示例。解压后将 `bin` 加入 PATH 即可。
+编辑器也提供单独附件：VS Code 安装 `.vsix`；Vim/Neovim 将编辑器压缩包中的
+`vim` 目录加入运行时路径，具体配置见包内 README。
+LSP 和格式化需要 Python 3.10+。PDF 用户手册及 `SHA256SUMS.txt` 可独立下载。
 
 ## 使用方法
 

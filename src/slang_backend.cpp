@@ -26,48 +26,6 @@ namespace {
 void append_unique(std::vector<std::string>& items, std::string value) {
     if (std::find(items.begin(), items.end(), value) == items.end()) items.push_back(std::move(value));
 }
-std::string strip_comments(std::string text) {
-    bool in_block = false;
-    for (std::size_t i = 0; i < text.size(); ++i) {
-        if (!in_block && text.substr(i, 2) == "/*") { in_block = true; text[i++] = ' '; text[i] = ' '; }
-        else if (in_block && text.substr(i, 2) == "*/") { in_block = false; text[i++] = ' '; text[i] = ' '; }
-        else if (in_block && text[i] != '\n') text[i] = ' ';
-    }
-    if (in_block) throw Error({}, "E_FILELIST", "unterminated block comment in filelist");
-    return text;
-}
-struct Sources {
-    std::vector<std::string> files, includes, defines;
-    std::set<std::filesystem::path> active;
-    void filelist(const std::filesystem::path& file) {
-        auto path = std::filesystem::weakly_canonical(file);
-        if (active.size() >= 128) throw Error({path.string()}, "E_LIMIT", "filelist nesting limit exceeded");
-        if (!active.insert(path).second) throw Error({path.string()}, "E_FILELIST", "circular filelist reference");
-        auto resolve = [&](std::string_view value) { return std::filesystem::weakly_canonical(path.parent_path() / std::filesystem::path(trim(value))).string(); };
-        std::istringstream lines(strip_comments(read_file(path)));
-        std::string line;
-        while (std::getline(lines, line)) {
-            for (std::size_t i = 0; i + 1 < line.size(); ++i) {
-                if (line.substr(i, 2) == "//" && (i == 0 || std::isspace(static_cast<unsigned char>(line[i-1])))) { line.resize(i); break; }
-            }
-            line = trim(line);
-            if (line.empty()) continue;
-            bool inc = line.starts_with("+incdir+");
-            if (inc || line.starts_with("+define+")) {
-                std::istringstream parts(line.substr(inc ? 8 : 8)); std::string part;
-                while (std::getline(parts, part, '+')) {
-                    part = trim(part);
-                    if (!part.empty()) append_unique(inc ? includes : defines, inc ? resolve(part) : part);
-                }
-            } else if (line.starts_with("-f")) {
-                auto sub = trim(std::string_view(line).substr(2));
-                if (sub.empty()) throw Error({path.string()}, "E_FILELIST", "missing filelist after -f");
-                filelist(resolve(sub));
-            } else if (line[0] != '+' && line[0] != '-') append_unique(files, resolve(line));
-        }
-        active.erase(path);
-    }
-};
 std::string packed_dimensions(const slang::syntax::DataTypeSyntax* type) {
     if (!type) return {};
     std::string result;
@@ -85,15 +43,19 @@ struct Backend::Impl {
     std::map<std::string, std::int64_t> constants;
     std::unique_ptr<slang::ast::Compilation> reflection;
     std::string ip_file;
+    SourceInputs sources;
 };
 Backend::~Backend() = default;
 Backend::Backend(const Options& options) : impl(std::make_unique<Impl>()) {
-    Sources sources;
+    auto& sources = impl->sources;
     for (const auto& file : options.filelists) sources.filelist(file);
+    sources.finish_libraries();
     for (const auto& directory : options.ip_dirs) {
         if (!std::filesystem::is_directory(directory)) throw Error({directory.string()}, "E_IO", "IP directory does not exist");
+        sources.dependencies.insert(std::filesystem::weakly_canonical(directory));
         std::vector<std::string> files;
         for (const auto& entry : std::filesystem::recursive_directory_iterator(directory)) {
+            if (entry.is_directory()) sources.dependencies.insert(std::filesystem::weakly_canonical(entry.path()));
             auto ext = entry.path().extension();
             if (entry.is_regular_file() && (ext == ".sv" || ext == ".v")) files.push_back(std::filesystem::weakly_canonical(entry.path()).string());
         }
@@ -122,6 +84,17 @@ Backend::Backend(const Options& options) : impl(std::make_unique<Impl>()) {
             interface_names.insert(std::string(definition->name));
     }
 }
+void Backend::collect_inputs(Result& result) const {
+    result.sv_sources = impl->sources.files;
+    result.include_dirs = impl->sources.includes;
+    result.defines = impl->sources.defines;
+    for (const auto& file : impl->sources.dependencies) result.dependencies.push_back(file);
+    for (const auto id : impl->source_manager.getAllBuffers()) {
+        const auto& path = impl->source_manager.getFullPath(id);
+        if (!path.empty() && std::filesystem::is_regular_file(path))
+            result.dependencies.push_back(std::filesystem::weakly_canonical(path));
+    }
+}
 const Interface* Backend::reflect(const std::string& name) {
     if (auto found = ips.find(name); found != ips.end()) return &found->second;
     if (!ip_names.contains(name)) return nullptr;
@@ -143,8 +116,13 @@ const Interface* Backend::reflect(const std::string& name) {
     const auto& body = *reflected_body;
     Interface interface;
     for (const auto& symbol : body.members()) {
-        if (symbol.kind == slang::ast::SymbolKind::TypeParameter)
-            throw Error(ip_loc, "E_IP", "type parameters are not supported by Slip: " + name);
+        if (symbol.kind == slang::ast::SymbolKind::TypeParameter) {
+            const auto& parameter = symbol.as<slang::ast::TypeParameterSymbol>();
+            const auto syntax = parameter.targetType.getTypeSyntax();
+            const auto text = syntax ? trim(syntax->toString()) : std::string("logic");
+            (parameter.isLocalParam() ? interface.localparams : interface.parameters).push_back({std::string(symbol.name), expression(ip_loc, Literal{text}), true});
+            continue;
+        }
         if (symbol.kind != slang::ast::SymbolKind::Parameter) continue;
         const auto& parameter = symbol.as<slang::ast::ParameterSymbol>();
         auto declared = symbol.getDeclaredType();
@@ -155,9 +133,10 @@ const Interface* Backend::reflect(const std::string& name) {
     for (const auto* symbol : body.getPortList()) {
         if (symbol->kind == slang::ast::SymbolKind::InterfacePort) {
             const auto& port = symbol->as<slang::ast::InterfacePortSymbol>();
-            if (auto range = port.getDeclaredRange(); !range || !range->empty())
-                throw Error(ip_loc, "E_INTERFACE", "interface port arrays are not supported: " + name + "." + std::string(port.name));
+            if (!port.getDeclaredRange()) throw Error(ip_loc, "E_INTERFACE", "cannot evaluate interface port dimensions: " + name + "." + std::string(port.name));
             InterfacePort info;
+            if (const auto syntax = port.getSyntax())
+                for (const auto dim : syntax->as<slang::syntax::DeclaratorSyntax>().dimensions) info.array += trim(dim->toString());
             info.name = std::string(port.name); info.direction = "interface"; info.native = true;
             if (port.interfaceDef) info.interface_type = std::string(port.interfaceDef->name);
             else if (!port.isGeneric) throw Error(ip_loc, "E_INTERFACE", "unresolved interface type at '" + name + "." + info.name + "'");
@@ -175,12 +154,39 @@ const Interface* Backend::reflect(const std::string& name) {
         const auto* declared = port.internalSymbol ? port.internalSymbol->getDeclaredType() : nullptr;
         if (declared) {
             info.width = packed_dimensions(declared->getTypeSyntax());
+            if (const auto syntax = declared->getTypeSyntax()) {
+                const auto text = trim(syntax->toString());
+                const auto first = text.substr(0, text.find_first_of(" [\t\n"));
+                static const std::set<std::string> builtins = {"logic", "bit", "reg", "wire", "int", "integer", "byte", "shortint", "longint", "time"};
+                info.typed = !first.empty() && !builtins.contains(first);
+                if (syntax->kind == slang::syntax::SyntaxKind::NamedType)
+                    info.type = trim(syntax->as<slang::syntax::NamedTypeSyntax>().name->toString());
+                else if (info.typed) info.type = text;
+            }
             if (auto dims = declared->getDimensionSyntax()) for (auto dim : *dims) info.array += trim(dim->toString());
         }
-        if (info.width.empty() && port.getType().getBitWidth() > 1 && info.array.empty()) info.width = "[" + std::to_string(port.getType().getBitWidth() - 1) + ":0]";
+        if (!info.typed && info.width.empty() && port.getType().getBitWidth() > 1 && info.array.empty()) info.width = "[" + std::to_string(port.getType().getBitWidth() - 1) + ":0]";
         interface.ports.push_back(std::move(info));
     }
     return &ips.emplace(name, std::move(interface)).first->second;
+}
+
+Result inspect_external(const std::string& name, const Options& options) {
+    Backend backend(options);
+    const auto* interface = backend.reflect(name);
+    if (!interface) throw Error({}, "E_MODULE", "cannot resolve external module '" + name + "'");
+    Result result;
+    IRModule module; module.name = name; module.parameters = interface->parameters; module.localparams = interface->localparams;
+    for (const auto& port : interface->ports) {
+        IRSignal signal; signal.name = port.name; signal.direction = port.direction;
+        signal.width = port.width; signal.array = port.array; signal.is_signed = port.is_signed;
+        signal.type = port.native ? (port.interface_type.empty() ? "interface" : port.interface_type) + (port.modport.empty() ? "" : "." + port.modport) : port.type;
+        signal.direction_explicit = true; signal.infer_width = false; signal.interface_port = port.native;
+        module.ports.push_back(std::move(signal));
+    }
+    result.inspection.emplace(name, std::move(module));
+    backend.collect_inputs(result);
+    return result;
 }
 
 const NativeInterface& Backend::reflect_native(const std::string& name, Location loc) {
@@ -227,15 +233,19 @@ std::int64_t Backend::constant(std::string_view expr, const Environment& environ
     std::string result_name = "__slip_constant";
     auto exists = [&](const std::string& name) { return std::any_of(environment.begin(), environment.end(), [&](const auto& pair) { return pair.first == name; }); };
     while (exists(result_name)) result_name += '_';
-    std::string source = "module __slip_eval;\n";
-    for (const auto& [name, value] : environment) source += "localparam " + name + " = " + value + ";\n";
+    std::string evaluator = "__slip_eval";
+    while (ip_names.contains(evaluator)) evaluator += '_';
+    std::string source = "module " + evaluator + ";\n";
+    for (const auto& [name, value] : environment) source += "localparam " + std::string(value.starts_with("type:") ? "type " : "") + name + " = " + (value.starts_with("type:") ? value.substr(5) : value) + ";\n";
     source += "localparam " + result_name + " = " + std::string(expr) + ";\nendmodule";
     if (auto found = impl->constants.find(source); found != impl->constants.end()) return found->second;
-    slang::SourceManager manager;
+    auto& manager = impl->source_manager;
     auto tree = slang::syntax::SyntaxTree::fromText(source, manager);
-    slang::ast::Compilation compilation;
+    slang::ast::CompilationOptions settings; settings.topModules.insert(evaluator);
+    slang::ast::Compilation compilation(slang::Bag{settings});
+    if (impl->ip_tree) compilation.addSyntaxTree(impl->ip_tree);
     compilation.addSyntaxTree(tree);
-    const auto& body = compilation.getRoot().lookupName("__slip_eval")->as<slang::ast::InstanceSymbol>().body;
+    const auto& body = compilation.getRoot().lookupName(evaluator)->as<slang::ast::InstanceSymbol>().body;
     slang::Diagnostics errors;
     for (const auto& diagnostic : compilation.getAllDiagnostics()) if (diagnostic.isError()) errors.push_back(diagnostic);
     if (!errors.empty()) throw Error(loc, "E_CONSTANT", slang::DiagnosticEngine::reportAll(manager, errors));

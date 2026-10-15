@@ -11,5 +11,5 @@ struct Project {
 };
 
 // Paths in slip.conf are resolved against the configuration file's directory.
-Project read_project(const std::filesystem::path& file);
+Project read_project(const std::filesystem::path& file, const std::string& profile = {});
 } // namespace slip::cli

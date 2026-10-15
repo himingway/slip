@@ -94,7 +94,7 @@ std::vector<Token> lex(std::string_view source, const std::string& filename) {
     };
     const std::vector<std::string> operators = {
         "<<<=", ">>>=", "<<=", ">>=", "===", "!==", "<<<", ">>>", "=>", "<=", ">=",
-        "+:", "-:", "==", "!=", "<<", ">>", "**", "&&", "||", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^="
+        "::", "(*", "*)", "+:", "-:", "==", "!=", "<<", ">>", "**", "&&", "||", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^="
     };
     while (pos < source.size()) {
         if (std::isspace(static_cast<unsigned char>(source[pos]))) { advance(); continue; }
@@ -126,12 +126,15 @@ std::vector<Token> lex(std::string_view source, const std::string& filename) {
             }
             if (pos == source.size()) throw Error(start_loc, "E_LEX", "unterminated string literal");
             advance();
-        } else if (digit(source[pos])) {
+        } else if (digit(source[pos]) || (source[pos] == '\'' && pos + 1 < source.size() && std::string_view("bBdDhHoOsS").find(source[pos + 1]) != std::string_view::npos)) {
             kind = TokenKind::number;
             while (pos < source.size() && (digit(source[pos]) || source[pos] == '_')) advance();
-            if (pos + 1 < source.size() && source[pos] == '\'' &&
-                std::string_view("bBdDhHoO").find(source[pos + 1]) != std::string_view::npos) {
+            auto radix_pos = pos + 1;
+            if (radix_pos < source.size() && (source[radix_pos] == 's' || source[radix_pos] == 'S')) ++radix_pos;
+            if (pos < source.size() && source[pos] == '\'' && radix_pos < source.size() &&
+                std::string_view("bBdDhHoO").find(source[radix_pos]) != std::string_view::npos) {
                 advance();
+                if (source[pos] == 's' || source[pos] == 'S') advance();
                 char radix = static_cast<char>(std::tolower(source[pos]));
                 advance();
                 auto digits_start = pos;
@@ -147,6 +150,7 @@ std::vector<Token> lex(std::string_view source, const std::string& filename) {
                 }
                 if (pos == digits_start || !actual_digit) throw Error(start_loc, "E_LEX", "integer literal has no digits");
             }
+            if (pos == start) throw Error(start_loc, "E_LEX", "invalid based integer literal");
         } else if (alpha(source[pos]) || source[pos] == '$') {
             kind = TokenKind::name;
             if (source[pos] == '$') advance();
@@ -158,7 +162,7 @@ std::vector<Token> lex(std::string_view source, const std::string& filename) {
             while (pos < source.size() && std::isspace(static_cast<unsigned char>(source[pos]))) advance();
             if (pos == source.size() || !alpha(source[pos])) throw Error(start_loc, "E_LEX", "expected name after backtick");
             while (pos < source.size() && alnum(source[pos])) advance();
-        } else if (source[pos] == '\'' && pos + 1 < source.size() && (source[pos + 1] == '0' || source[pos + 1] == '1')) {
+        } else if (source[pos] == '\'' && pos + 1 < source.size() && std::string_view("01xXzZ").find(source[pos + 1]) != std::string_view::npos) {
             kind = TokenKind::number; advance(); advance();
         } else {
             bool matched = false;
@@ -224,6 +228,10 @@ class Parser {
     }
     Token name(bool meta = false) {
         auto tok = take();
+        if (!meta && tok.kind == TokenKind::meta)
+            throw Error(tok.loc, "E_PARSE", "metaprogram variable '" + tok.text + "' requires `for (with a backtick); a procedural for inside comb/seq uses plain identifiers");
+        if (meta && tok.kind == TokenKind::name)
+            throw Error(tok.loc, "E_PARSE", "compile-time `for requires a backtick variable, such as `i");
         if (tok.kind != (meta ? TokenKind::meta : TokenKind::name) || keywords.contains(tok.text))
             throw Error(tok.loc, "E_PARSE", "expected identifier, got '" + tok.text + "'");
         if (meta) tok.text.erase(0, 1);
@@ -248,6 +256,7 @@ class Parser {
     }
     ExprPtr primary() {
         auto tok = take();
+        if (tok.kind == TokenKind::name) while (eat("::")) tok.text += "::" + member_name().text;
         if (tok.text == "+" || tok.text == "-" || tok.text == "!" || tok.text == "~" ||
             tok.text == "&" || tok.text == "|" || tok.text == "^")
             return expression(tok.loc, Unary{tok.text, expr(13)});
@@ -285,11 +294,36 @@ class Parser {
         return body;
     }
     Body branch() { if (peek().text == "{") return block(); return {statement()}; }
+    ExprPtr type_value() {
+        const auto start = peek();
+        auto text = member_name().text;
+        while (eat("::")) text += "::" + member_name().text;
+        if (peek().text == "signed" || peek().text == "unsigned") text += " " + take().text;
+        while (peek().text == "[") {
+            const auto value = width();
+            if (const auto* range = std::get_if<Binary>(&value->node); range && range->op == ":") text += " [" + to_sv(range->left) + ":" + to_sv(range->right) + "]";
+            else text += " [" + to_sv(value) + "-1:0]";
+        }
+        return expression(start.loc, Literal{text});
+    }
     NamedValue parameter(bool module) {
         if (module) {
-            expect("param"); auto tok = name(); expect("="); return {tok.text, expr()};
+            expect("param"); const bool type = eat("type"); auto tok = name(); expect("="); return {tok.text, type ? type_value() : expr(), type};
         }
-        expect("."); auto tok = name(); expect("("); auto value = expr(); expect(")"); return {tok.text, value};
+        expect("."); auto tok = name(); expect("(");
+        const bool type = peek().text == "logic" || peek().text == "bit" || peek().text == "int";
+        auto value = type ? type_value() : expr(); expect(")"); return {tok.text, value, type};
+    }
+    std::vector<NamedValue> attributes() {
+        std::vector<NamedValue> result;
+        while (eat("(*")) {
+            do {
+                const auto attribute = member_name();
+                result.push_back({attribute.text, eat("=") ? expr() : ExprPtr{}});
+            } while (eat(","));
+            expect("*)");
+        }
+        return result;
     }
     bool assignable(const ExprPtr& value) {
         if (auto id = std::get_if<Identifier>(&value->node)) return id->name != "_";
@@ -301,10 +335,15 @@ class Parser {
     }
     SignalDecl declaration() {
         SignalDecl value;
+        value.type_explicit = false;
         if (peek().text == "input" || peek().text == "output" || peek().text == "inout") value.direction = take().text;
         value.is_signed = eat("signed");
         if (peek().text == "logic" || peek().text == "bit" || peek().text == "int" ||
-            (peek().kind == TokenKind::name && peek(1).kind == TokenKind::name)) value.type = take().text;
+            (peek().kind == TokenKind::name && (peek(1).kind == TokenKind::name || peek(1).text == "::"))) {
+            value.type = take().text;
+            while (eat("::")) value.type += "::" + member_name().text;
+            value.type_explicit = true;
+        }
         if (eat("signed")) value.is_signed = true;
         if (peek().text == "[") value.width = width();
         value.name = name().text;
@@ -354,6 +393,18 @@ class Parser {
     Statement statement() {
         Depth guard(nesting, peek().loc);
         auto start = peek();
+        if (peek().text == "(*") {
+            const auto values = attributes();
+            auto result = statement();
+            std::function<void(Statement&)> attach = [&](Statement& item) {
+                std::visit([&](auto& node) {
+                    if constexpr (requires { node.attributes; }) node.attributes.insert(node.attributes.begin(), values.begin(), values.end());
+                    else if constexpr (std::is_same_v<std::decay_t<decltype(node)>, Group>) for (auto& child : node.body) attach(child);
+                    else throw Error(start.loc, "E_ATTRIBUTE", "attributes apply to modules, signals, instances and processes");
+                }, item.node);
+            };
+            attach(result); return result;
+        }
         if (peek().text == "typedef" || peek().text == "enum" || peek().text == "struct") return type_declaration();
         if (eat("function")) return {start.loc, hardware_function()};
         if (eat("return")) { auto value = expr(); expect(";"); return {start.loc, Return{value}}; }
@@ -367,7 +418,12 @@ class Parser {
             if (use.native && eat(".")) use.modport = member_name().text;
             if (eat("#")) { expect("("); if (!eat(")")) { do { use.parameters.push_back(parameter(false)); } while(eat(",")); expect(")"); } }
             use.name = name().text;
-            if (use.native && peek().text == "[") throw Error(peek().loc, "E_INTERFACE", "interface instance arrays are not supported");
+            while (use.native && eat("[")) {
+                auto first = expr(); ExprPtr last;
+                if (eat(":")) last = expr();
+                else { last = expression(first->loc, Binary{"-", first, expression(first->loc, Literal{"1"})}); first = expression(first->loc, Literal{"0"}); }
+                expect("]"); use.dimensions.emplace_back(first, last);
+            }
             if (use.native && eat("{")) {
                 if (!eat("}")) {
                     do {
@@ -411,17 +467,19 @@ class Parser {
         }
         if (peek().text == "for" || peek().text == "`for") {
             bool meta = take().text == "`for";
-            expect("("); auto var = name(meta); expect("="); auto init = expr(); expect(";");
+            expect("(");
+            if (!meta && (peek().text == "int" || peek().text == "integer")) take();
+            auto var = name(meta); expect("="); auto init = expr(); expect(";");
             auto condition = expr(); expect(";"); auto step_var = name(meta); auto op = take();
             ExprPtr step;
-            if (op.text == "+" && eat("+"))
-                step = expression(op.loc, Binary{"+", expression(op.loc, Identifier{step_var.text, meta}), expression(op.loc, Literal{"1"})});
+            if ((op.text == "+" || op.text == "-") && eat(op.text))
+                step = expression(op.loc, Binary{op.text, expression(op.loc, Identifier{step_var.text, meta}), expression(op.loc, Literal{"1"})});
             else {
                 step = expr();
                 if (op.text != "=") {
-                    if (meta || op.text.size() < 2 || op.text.back() != '=' || !precedence(op.text.substr(0, op.text.size() - 1)))
+                    if (op.text.size() < 2 || op.text.back() != '=' || !precedence(op.text.substr(0, op.text.size() - 1)))
                         throw Error(op.loc, "E_PARSE", "invalid loop step");
-                    step = expression(op.loc, Binary{op.text.substr(0, op.text.size() - 1), expression(op.loc, Identifier{step_var.text}), step});
+                    step = expression(op.loc, Binary{op.text.substr(0, op.text.size() - 1), expression(op.loc, Identifier{step_var.text, meta}), step});
                 }
             }
             expect(")"); return {start.loc, For{var.text, step_var.text, init, condition, step, block(), meta}};
@@ -470,7 +528,22 @@ class Parser {
         if (peek().kind == TokenKind::name && !keywords.contains(peek().text) &&
             (peek(1).text == "." || peek(1).text == "=" || peek(1).text == "<=" || peek(1).text == "[" ||
              (peek(1).text.size() > 1 && peek(1).text.back() == '='))) return {start.loc, assignment()};
-        auto signal = declaration(); expect(";"); return {start.loc, std::move(signal)};
+        auto signal = declaration();
+        Body declarations{{start.loc, signal}};
+        while (eat(",")) {
+            auto copy = signal;
+            const auto identifier = name(); copy.name = identifier.text;
+            copy.array_first = {}; copy.array_last = {}; copy.dimensions.clear();
+            while (eat("[")) {
+                auto first = expr(); expect(":"); auto last = expr(); expect("]");
+                if (!copy.array_first) { copy.array_first = first; copy.array_last = last; }
+                else copy.dimensions.emplace_back(first, last);
+            }
+            declarations.push_back({identifier.loc, std::move(copy)});
+        }
+        expect(";");
+        if (declarations.size() == 1) return declarations.front();
+        return {start.loc, Group{std::move(declarations)}};
     }
 public:
     Parser(std::string_view source, const std::string& filename) : tokens(lex(source, filename)) {}
@@ -516,10 +589,17 @@ public:
         if (peek().kind != TokenKind::end) throw Error(peek().loc, "E_PARSE", "unexpected trailing expression tokens");
         return result;
     }
+    ExprPtr whole_type() {
+        auto result = type_value();
+        if (peek().kind != TokenKind::end) throw Error(peek().loc, "E_PARSE", "unexpected trailing type tokens");
+        return result;
+    }
     Unit unit() {
         Unit result;
         while (peek().kind != TokenKind::end) {
+            const auto module_attributes = attributes();
             auto tok = take();
+            if (!module_attributes.empty() && tok.text != "module") throw Error(tok.loc, "E_ATTRIBUTE", "top-level attributes require a module");
             if (tok.text == "include") {
                 auto path = take();
                 if (path.kind != TokenKind::string) throw Error(path.loc, "E_PARSE", "expected include path");
@@ -555,6 +635,7 @@ public:
             }
             if (tok.text != "module") throw Error(tok.loc, "E_PARSE", "expected module, include or defun");
             Module module{tok.loc, name().text, {}, {}, {}};
+            module.attributes = module_attributes;
             if (eat("#")) {
                 expect("(");
                 if (!eat(")")) { do { module.parameters.push_back(parameter(true)); } while (eat(",")); expect(")"); }
@@ -648,6 +729,7 @@ std::string serialize(const ExprPtr& expr, int context) {
 
 Unit parse(std::string_view source, std::string filename) { return Parser(source, filename).unit(); }
 ExprPtr parse_expression(std::string_view source, std::string filename) { return Parser(source, filename).whole_expression(); }
+ExprPtr parse_type_expression(std::string_view source, std::string filename) { return Parser(source, filename).whole_type(); }
 std::string to_sv(const ExprPtr& expr) { return serialize(expr, 0); }
 void walk_expression(const ExprPtr& expr, const std::function<void(const Expr&)>& visitor) {
     if (!expr) return;
@@ -672,7 +754,7 @@ std::vector<std::string> references(const ExprPtr& expr) {
     if (!expr) return result;
     auto add = [&](const ExprPtr& value) { for (auto& name : references(value)) if (std::find(result.begin(), result.end(), name) == result.end()) result.push_back(std::move(name)); };
     std::visit(Overloaded{
-        [&](const Identifier& node) { if (node.name != "_") result.push_back(node.name); },
+        [&](const Identifier& node) { if (node.name != "_" && node.name.find("::") == node.name.npos) result.push_back(node.name); },
         [](const Literal&) {},
         [&](const Unary& node) { add(node.operand); },
         [&](const Binary& node) { add(node.left); add(node.right); },

@@ -275,7 +275,7 @@ endmodule
   \item Template identifiers embed loop variables in signal names (e.g., \code{data\_`i}).
   \item \code{include "file.slip"} shares modules, generation functions, types, RTL functions and bundle schemas across files.
   \item Bundles expand to ordinary ports; external SV interfaces support parameterized instances, modport ports and whole-group connections.
-  \item Generated SV annotated with \code{// implicit}, \code{// no width}, \code{// width from X.Y} for easy review.
+  \item Generated declarations identify implicit ports/signals, inferred directions/types and width sources for review.
 \end{itemize}
 
 % ──────────────────────────────────────────────────────────────────
@@ -499,7 +499,7 @@ module example (
 endmodule
 \end{lstlisting}
 
-Implicit signals used in instance port connections automatically inherit the target port's width, annotated with \code{// width from X.Y} in the generated SV. Other implicit signals default to 1-bit and are annotated with \code{// implicit, no width} for easy review.
+Implicit signals used in instance port connections automatically inherit the target port's width, annotated with \code{width from X.Y} in the generated SV. Other implicit signals default to 1-bit and carry \code{implicit logic, no width} comments. Automatically exported ports use \code{implicit port}; listed ports still identify inferred direction and omitted base types.
 
 % ──────────────────────────────────────────────────────────────────
 \chapter{Port Inference}
@@ -1651,7 +1651,7 @@ module decode(input_packet, output_packet) {
 
 Types may be declared at the top level or inside a module. Top-level declarations,
 including those loaded by \code{include}, are copied into each module's scope.
-User-defined port types use non-ANSI SV declarations so the typedefs are in scope.
+Ports depending on module-local typedefs use non-ANSI declarations to preserve scope. Package types, type parameters and interface ports otherwise use ANSI declarations.
 Packed structs support data fields and nested declared types. Field selection
 participates in assignment, driver and combinational-feedback checks.
 
@@ -1802,9 +1802,9 @@ slang's \code{SyntaxTree::fromFiles()} with a shared preprocessor context.
 This preserves macro ordering across files. Ports and parameters are reflected
 lazily when Slip actually references a module or interface.
 
-An unused module with unsupported type parameters no longer blocks the whole IP
-directory merely because reflection cannot represent it. Referenced modules with
-type parameters still report \code{E\_IP}. Supported native interface ports are
+Unused complex definitions do not block the whole IP directory merely because
+reflection cannot represent them. Referenced value and type parameters are
+supported. Native interface ports and arrays are
 described in Chapter~\ref{ch:native-interfaces}. Syntax errors in external files
 and semantic errors in the actual design are still reported. Validation selects
 roots from the generated design instead of elaborating unrelated vendor roots.
@@ -1947,8 +1947,8 @@ Types use \code{type(instance.field)} and width expressions use
 origins are marked \code{interface}.
 
 Supported definitions expose top-level data fields and modports composed of
-input/output/inout data fields. Current exclusions are interface instance/port
-arrays, nested interfaces, type parameters, clocking, modport expressions or
+input/output/inout data fields, value/type parameters and interface arrays.
+Current exclusions are nested interfaces, clocking, modport expressions or
 renamed fields, ref fields and imported/exported tasks or functions.
 Unsupported views are rejected when used; unused complex modports do not block
 other supported views. The full syntax and boundaries are also documented in
@@ -2108,7 +2108,7 @@ Generates:
     logic [7:0] sum;
 \end{lstlisting}
 
-Other implicit signals (not connected to ports) default to 1-bit and are annotated with \code{// implicit, no width} in the generated output.
+Other implicit signals (not connected to ports) default to 1-bit and are annotated with \code{// implicit logic, no width} in the generated output.
 
 \section{Generated Code Annotations}
 
@@ -2120,14 +2120,35 @@ Slip adds review annotations to generated SystemVerilog signals and ports:
 \toprule
 \textbf{Annotation} & \textbf{Meaning} \\
 \midrule
-\code{// implicit} & Signal or port was auto-generated (not explicitly declared) \\
+\code{implicit port} & Port was created without a source declaration \\
+\code{implicit logic} & Internal logic declaration was automatically created \\
+\code{inferred direction: input/output/inout} & Port direction was inferred \\
+\code{inferred type: logic} & Omitted base type defaults to logic \\
 \code{// no width} & Signal or port has no declared width (defaults to 1-bit) \\
 \code{// width from X.Y} & Width was automatically inferred from instance port \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-These annotations help identify signals that may need explicit width declarations during code review. Use \code{grep "no width" *.sv} to quickly find all un-sized signals.
+Annotations are comma-separated after \code{//}, immediately before the actual
+declaration. Non-ANSI ports are annotated beside their body declarations, rather
+than the bare names in the header. Listed port names remain explicit declarations
+for strict checking even when direction or type is inferred. Defaulted types in
+RTL function locals, arguments and return values are also annotated; argument
+annotations use block comments within the signature.
+
+\begin{lstlisting}[language=SystemVerilog]
+// implicit port, inferred direction: input, inferred type: logic, no width
+input logic enable;
+// inferred direction: output
+output logic [7:0] result;
+// implicit logic, width from child.data
+logic [7:0] internal_data;
+\end{lstlisting}
+
+Text inspection shows inferred directions and types; signal JSON includes
+\code{direction\_inferred} and \code{type\_inferred}. These annotations help
+identify declarations that need explicit types or widths during review.
 
 \section{Integer Literal Validation}
 
@@ -2711,6 +2732,154 @@ endmodule
 \end{lstlisting}
 
 % ════════════════════════════════════════════════════════════════════
+
+\chapter{Project Builds and Debugging}
+
+\section{Managed build outputs}
+A successful \code{slip build} emits \code{sources.f}, \code{slip.d},
+\code{source-map.json} and a hidden ownership manifest alongside the modules.
+The filelist contains absolute external and generated paths, include directories
+and defines; generated modules follow dependency order. The Make depfile includes
+Slip inputs, external sources and headers, nested filelists, scanned directories
+and the CLI project configuration.
+Content-identical SV and metadata outputs retain their timestamps. A separate
+\code{.slip-build-stamp} advances after successful publication, and serves as the
+generator target for timestamp-based Make/Ninja builds. Obsolete generated files are
+removed only while their contents still match the manifest. Handwritten files
+and edited obsolete files are preserved. Edited current outputs cause
+\code{E\_OUTPUT\_MODIFIED} before publication. Use the generated filelist to select
+sources downstream. Changed files are staged and renamed atomically; a hidden
+\code{.slip-lock} prevents simultaneous publication into one directory.
+
+\section{Tops, overrides and named profiles}
+\begin{lstlisting}[language={}]
+entry = rtl/top.slip
+top = top
+param.WIDTH = 8
+warning.W_LATCH = error
+
+[profile.fpga]
+param.WIDTH = 16
+out_dir = build/fpga
+\end{lstlisting}
+\begin{lstlisting}[language=bash]
+slip build --project slip.conf --profile fpga
+slip check design.slip --top top -P WIDTH=32
+\end{lstlisting}
+Defaults apply before the selected profile and CLI overrides. Repeatable IP paths
+and filelists append; scalar, parameter and warning keys replace earlier values.
+Paths in profiles remain configuration-relative. An explicit top limits
+elaboration and output to reachable modules. Parameter overrides require a top
+and apply before structural expansion and specialization.
+
+\section{Filelist arguments}
+Filelists accept quoted paths, multiple arguments per line, line continuations,
+\code{-f}/\code{-F}, \code{-v}, \code{-y}, \code{+libext+}, \code{+incdir+},
+\code{+define+}, \code{-I}, \code{-D}, and \code{-sverilog}/\code{-sv}.
+Paths, including nested filelists, are relative to their containing filelist.
+Environment references \code{\$NAME}, \code{\$\{NAME\}} and \code{\$(NAME)}
+expand before path resolution. Single quotes or a backslash preserve literal
+characters. Unsupported options and missing variables report their source
+locations. Library directories scan matching extensions in sorted order.
+
+\section{Warning policy and local waivers}
+\code{--warning W\_LATCH=error} promotes one warning; levels are
+\code{error}, \code{warning} and \code{off}. Per-code settings override
+\code{--warnings-as-errors}. Project keys use \code{warning.CODE}.
+Separate \code{no\_implicit\_ports} and \code{no\_implicit\_signals} settings
+have matching CLI flags. Listing a name in the module header counts as explicit.
+\begin{lstlisting}[language=Slip]
+module low_bits(a, y) {
+    logic [7:0] a;
+    logic [3:0] y;
+    // slip: waive W_WIDTH -- protocol keeps the low nibble
+    assign y = a;
+}
+\end{lstlisting}
+A waiver applies to its executable line or the next executable line. For regions,
+use \code{// slip: disable CODE -- reason} and \code{// slip: enable CODE}.
+Reasons are required; unknown codes and invalid enable/disable pairs are errors.
+Waivers precede warning promotion and never suppress semantic errors.
+
+\section{Source maps and signal queries}
+\code{source-map.json} maps every generated line to a Slip file, line and column,
+including generation bindings in \code{expansion}. Source paths are absolute
+except virtual labels; generated filenames are relative to the map directory.
+\begin{lstlisting}[language=bash]
+slip inspect design.slip --signal top.internal_data
+slip inspect design.slip --signal top.internal_data --format=json
+\end{lstlisting}
+Signals include \code{drivers} and \code{uses}, with reference kind, expression
+and location. References include assignments, control expressions, clocks,
+resets, assertions and connected instance ports within the module. Type,
+direction and width inference provenance remain visible. External implementation
+is represented by its port boundary.
+
+\section{Additional RTL convenience}
+Signed based literals include \code{8'shff}, \code{16'sd123} and \code{'shff}.
+Comma-separated declarations share type and packed width, with independent
+unpacked dimensions per name. Procedural loops accept an optional
+\code{int}/\code{integer} declaration, increment, decrement and compound steps.
+Compile-time loops require backticks and accept the same step forms. Diagnostics
+for mixed loop forms explain which syntax to use.
+
+
+\section{SystemVerilog interoperability}
+External package types and constants use qualified names such as
+\code{types::packet\_t} and \code{types::WIDTH}. Module type parameters use
+\code{param type T = logic [7:0]}; instance overrides accept types such as
+\code{.T(types::packet\_t)} and \code{.T(logic [15:0])}.
+Type parameters used by generation controls are specialized by binding and retain
+\code{\$typename} guards against inconsistent downstream overrides.
+SV attributes use \code{(* keep = "true" *)} before a module, signal, instance
+or process. Native interface arrays support whole-array connections and constant
+indexed element connections, with shape, direction and driver checks.
+Dimensions controlling the generated interface elements participate in parameter
+freezing. The complete interop example uses public package types, type parameters,
+interface arrays and a generated producer:
+\lstinputlisting[language=Slip,
+  caption={Package types, generic RTL and interface arrays}]{../../examples/interop/design.slip}
+
+\section{Editor support}
+The VS Code extension in \code{editors/vscode} provides highlighting, snippets,
+save diagnostics, port completion, navigation, hover, symbols and formatting.
+Set \code{slip.compilerPath} and \code{slip.pythonPath}. The optional
+\code{slip-lsp} server requires Python 3.10 or newer and the standard library;
+the native compiler does not require Python. Other editors connect over stdio
+using LSP 3.17 and UTF-16 positions.
+
+The server discovers parent projects or accepts an explicit project and profile.
+Saving checks the project on disk. Completion uses buffer text and reflected
+interfaces, including external modules while the design is incomplete.
+\begin{lstlisting}[language=bash]
+slip inspect --interface external_ip --project slip.conf --format=json
+slip-lsp --slip /absolute/path/to/slip
+slip-lsp --format design.slip
+\end{lstlisting}
+Formatting preserves tokens, comments, statement line breaks and defun semantics,
+while normalizing indentation and trailing whitespace. VS Code supports
+Format Document and format-on-save.
+
+The Vim/Neovim runtime in \code{editors/vim} adds file detection, highlighting,
+indentation and background compiler commands. Add this directory to the editor's
+runtime path, set \code{g:slip\_compiler}, and enable filetype plugins and indentation.
+Vim requires version 8.2 or newer with job/channel support; the native Neovim LSP
+integration requires version 0.8 or newer. In a full checkout the runtime finds
+the shared Python server automatically, or uses an installed \code{slip-lsp}.
+\begin{lstlisting}[language=bash]
+:SlipCheck
+:SlipBuild
+:SlipInspect
+:SlipFormat
+\end{lstlisting}
+Check/build/inspect operate on saved sources and discover parent projects;
+\code{g:slip\_project} and \code{g:slip\_profile} select an explicit configuration.
+Compiler errors and warnings enter quickfix. Formatting operates on buffer text,
+respects indentation settings, and discards results if editing continues during
+the job. Neovim starts its native LSP client automatically; Vim users can install
+vim-lsp for the same server features. See \code{editors/vim/README.md} and
+\code{:help slip} for setup, commands and optional snippet templates.
+
 \appendix
 % ════════════════════════════════════════════════════════════════════
 
@@ -2728,13 +2897,19 @@ TopLevelItem ::= ModuleDecl | FuncDef | IncludeDirective
 
 IncludeDirective ::= "include" STRING ";"
 
-ModuleDecl ::= "module" IDENT
+ModuleDecl ::= [Attributes] "module" IDENT
                [ "#(" ParameterList ")" ]
                [ "(" PortList ")" ]
                "{" { Statement } "}"
 
 ParameterList ::= ParameterDecl { "," ParameterDecl }
 ParameterDecl ::= "param" IDENT "=" Expr
+                | "param" "type" IDENT "=" TypeValue
+TypeValue ::= BaseType ["signed" | "unsigned"] {PackedWidth}
+QualifiedName ::= IDENT {"::" IDENT}
+Attributes ::= "(*" AttributeItem {"," AttributeItem} "*)"
+               { "(*" AttributeItem {"," AttributeItem} "*)" }
+AttributeItem ::= IDENT ["=" Expr]
 
 PortList      ::= PortItem { "," PortItem }
 PortItem      ::= IDENT [ "[" Expr [ ":" Expr ] "]" ]
@@ -2758,14 +2933,18 @@ Statement ::= SignalDecl
             | AssertionStmt
             | BundleUse
             | NativeInterfaceUse
+            | Attributes (SignalDecl | InstanceStmt | SeqBlock
+                          | CombBlock | InitialBlock
+                          | NativeInterfaceUse)
 
 Direction  ::= "input" | "output" | "inout"
-BaseType   ::= "logic" | "bit" | "int" | IDENT
+BaseType   ::= "logic" | "bit" | "int" | QualifiedName
 PackedWidth ::= "[" Expr [ ":" Expr ] "]"
 UnpackedRange ::= "[" Expr ":" Expr "]"
 TypedName  ::= ["signed"] [BaseType] ["signed"]
                [PackedWidth] IDENT { UnpackedRange }
-SignalDecl ::= [Direction] TypedName ";"
+SignalDecl ::= [Direction] TypedName
+               {"," IDENT {UnpackedRange}} ";"
 
 TypeDecl ::= "typedef" TypedName ";"
            | ["typedef"] EnumBody IDENT ";"
@@ -2790,6 +2969,7 @@ BundleUse ::= ("master" | "slave" | "bus") IDENT
               [NamedOverrides] IDENT ";"
 NativeInterfaceUse ::= "interface" IDENT [ "." IDENT ]
                        [NamedOverrides] IDENT
+                       {"[" Expr [":" Expr] "]"}
                        ["{" [NamedConnection
                            { "," NamedConnection }] "}"] ";"
 
@@ -2816,11 +2996,12 @@ InitialBlock ::= "initial" BlockStmt
 IfStmt  ::= "if" "(" Expr ")" BlockStmt
             [ "else" BlockStmt ]
 
-ForStmt ::= "for" "(" IDENT "=" Expr ";" Expr ";"
+ForStmt ::= "for" "(" ["int" | "integer"]
+                   IDENT "=" Expr ";" Expr ";"
                    ForStep ")" BlockStmt
 ForStep ::= IDENT "=" Expr
           | IDENT CompoundOp Expr
-          | IDENT "++"
+          | IDENT ("++" | "--")
 
 CaseStmt ::= ("case" | "casez" | "casex") "(" Expr ")"
              "{" { CaseItem } "}"
@@ -2829,7 +3010,10 @@ CaseItem ::= PatternList ":" Statement
 PatternList ::= Expr { "," Expr }
 
 GenForStmt ::= "`for" "(" TICK_IDENT "=" Expr ";" Expr ";"
-                          TICK_IDENT "=" Expr ")" BlockStmt
+                          GenForStep ")" BlockStmt
+GenForStep ::= TICK_IDENT "=" Expr
+             | TICK_IDENT CompoundOp Expr
+             | TICK_IDENT ("++" | "--")
 GenIfStmt  ::= "`if" "(" Expr ")" BlockStmt
                          [ "`else" BlockStmt ]
 
@@ -2837,7 +3021,7 @@ InstanceStmt ::= IDENT
                  [ "#(" NamedParam { "," NamedParam } ")" ]
                  IDENT "{" { Connection } "}" [";"]
 
-NamedParam ::= "." IDENT "(" Expr ")"
+NamedParam ::= "." IDENT "(" (Expr | TypeValue) ")"
 NamedConnection ::= "." IDENT [ "(" Expr ")" ]
 Connection ::= NamedConnection
              | STRING "=>" STRING
@@ -2854,9 +3038,10 @@ Lvalue ::= IDENT { SelectSuffix }
 \begin{itemize}
   \item \code{TICK\_IDENT} denotes a backtick-prefixed identifier (e.g., \code{`i}).
   \item Template identifiers (e.g., \code{data\_`i}) are formed at the lexical level by merging adjacent \code{IDENT}, \code{TICK}, and \code{TICK\_IDENT} tokens.
+  \item Qualified names refer to external package types, constants and functions. Type parameters retain type-valued bindings through specialization.
   \item Expressions are parsed by a Pratt parser and support all operators listed in the operator precedence table.
   \item The grammar summarizes syntax; context rules restrict declarations, returns, assertions and processes to their permitted scopes. Enum bases are logic/bit/int; packed struct fields have no port directions or unpacked dimensions. Function arguments are inputs. Bundle fields require input/output directions.
-  \item Native interface ports require a modport and inherit parameters; internal interface instances may set parameters and constructor connections. Instance and port arrays are not supported.
+  \item Native interface ports require a modport and inherit parameters; internal interface instances may set parameters and constructor connections. Interface instance and port arrays are supported with constant indices and matching shapes.
   \item \code{INDENT}/\code{DEDENT} summarize the indentation-based defun body. RTL \code{function} bodies use braces.
   \item Special expression forms include concatenation \code{\{a, b\}}, replication \code{\{n\{expr\}\}}, width or named-type casts, field access, indexed part selects, and set membership \code{x inside \{v1, v2, ...\}}.
   \item Compound assignment operators are desugared at parse time into regular assignments.

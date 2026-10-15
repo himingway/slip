@@ -1,0 +1,126 @@
+*slip.txt*                    Slip HDL editor support
+
+=============================================================================
+CONTENTS                                                        *slip*
+
+  1. Installation ........................................ |slip-install|
+  2. Commands ............................................ |slip-commands|
+  3. Settings ............................................ |slip-settings|
+  4. Language server ..................................... |slip-lsp|
+
+=============================================================================
+1. INSTALLATION                                                *slip-install*
+
+Requires Vim 8.2+ with +job/+channel/+eval, or Neovim 0.8+.
+Add editors/vim to 'runtimepath' before filetype setup: >
+  execute 'set runtimepath^=' . fnameescape('/path/to/slip/editors/vim')
+  let g:slip_compiler = '/path/to/slip/build/release/slip'
+  filetype plugin indent on
+  syntax enable
+<
+Check/build/inspect need the native compiler. LSP/formatting also need Python
+3.10+. The server is found as slip-lsp on PATH, then from the adjacent
+../vscode/server/slip_lsp.py in a full checkout. For a runtime-only copy, install
+slip-lsp or configure g:slip_server_cmd. Use matching compiler/server versions.
+
+=============================================================================
+2. COMMANDS                                                    *slip-commands*
+
+All commands are local to Slip buffers. No mappings are installed.
+
+:SlipCheck                                                      *:SlipCheck*
+        Check the saved file or nearest parent slip.conf project. Compiler
+        diagnostics are written to quickfix. Use |:cnext| and |:cprevious|.
+
+:SlipBuild                                                      *:SlipBuild*
+        Build with project settings. With no project, the working directory is
+        the source directory and the compiler defaults to its build/ directory.
+
+:SlipInspect                                                    *:SlipInspect*
+        Show readable module, signal, driver/use and connection information in
+        a scratch window. Does not generate HDL files.
+
+:SlipFormat                                                     *:SlipFormat*
+        Format current buffer text, including unsaved edits. Honors
+        'shiftwidth' and 'expandtab'; preserves 'fileformat' and defun body
+        indentation. Does not save the file. Results are discarded if the
+        buffer changes while formatting. Show a hidden buffer and rerun the
+        command to apply formatting. The edit can be undone with |u|.
+
+Check/build/inspect require saved buffers. Projects use the configured entry.
+Commands run in background jobs. One job per buffer is allowed at a time.
+Changed buffers discard old diagnostics. Explicit commands open quickfix when
+diagnostics exist unless g:slip_open_quickfix is zero. Automatic save checks
+never open it. Previous quickfix lists remain accessible with |:colder|.
+
+Neovim native LSP commands:                                    *:SlipLspStart*
+  :SlipLspStart         Attach to this buffer.                  *:SlipLspStop*
+  :SlipLspStop          Detach this buffer; retain shared clients used by others.
+                                                               *:SlipLspRestart*
+  :SlipLspRestart       Restart the server and reattach its project buffers.
+
+=============================================================================
+3. SETTINGS                                                    *slip-settings*
+
+Use g:slip_* globally or b:slip_* per buffer. Configure before opening files.
+
+  compiler          'slip'       Compiler path or executable on PATH.
+  python            'python3'    Python executable for the repository server.
+  server_cmd        []           Explicit server argv; also used for formatting.
+  project           ''           Config path; empty finds parent slip.conf.
+  profile           ''           Named project profile.
+  indent_width      4            Initial shiftwidth/softtabstop (expandtab on).
+  check_on_save     0            Extra compiler check into quickfix on save.
+  open_quickfix     1            Explicit commands open nonempty quickfix.
+  lsp_auto_start    1            Neovim: attach native LSP on Slip filetype.
+
+g:slip_vim_lsp defaults to 1 and enables automatic vim-lsp registration in Vim.
+This setting is global only. Neovim uses its native client instead.
+
+Example: >
+  let g:slip_project = '/path/to/slip.conf'
+  let g:slip_profile = 'fpga'
+  let g:slip_server_cmd = ['python3', '/path/to/slip_lsp.py']
+<
+Neovim Lua setup accepts the same keys without g:slip_, plus on_attach and
+capabilities. It is optional when the default executables are on PATH: >lua
+  require('slip').setup({
+    compiler = '/path/to/slip',
+    profile = 'fpga',
+    on_attach = function(_, buf)
+      vim.keymap.set('n', 'gd', vim.lsp.buf.definition, { buffer = buf })
+      vim.keymap.set('n', 'K', vim.lsp.buf.hover, { buffer = buf })
+    end,
+  })
+<
+After changing compiler/project/profile, restart the language client.
+
+=============================================================================
+4. LANGUAGE SERVER                                             *slip-lsp*
+
+Neovim starts native LSP automatically if the compiler/server are available.
+Use |i_CTRL-X_CTRL-O| for completion and |CTRL-]| for definitions. Hover,
+document symbols and formatting use the standard vim.lsp.buf functions.
+No nvim-lspconfig or completion plugin is required. Different project/profile
+configurations use separate clients.
+
+Vim users can install prabirshrestha/vim-lsp. The Slip plugin registers its
+server on User lsp_setup. Configure omnifunc in your vimrc: >
+  augroup my_slip_lsp
+    autocmd!
+    autocmd User lsp_buffer_enabled if &filetype ==# 'slip' | setlocal omnifunc=lsp#complete | endif
+  augroup END
+<
+Then use :LspDefinition, :LspHover, :LspDocumentSymbol or :LspDocumentFormat.
+Vim syntax, indentation and compiler/formatter commands also work without LSP.
+
+Diagnostics run on open/save. Edits clear stale diagnostics. Projects are
+checked on disk; save other edited project buffers before checking. Completion
+uses current buffer text and can offer local/external SV ports while an
+instance is incomplete. The server also supports definitions, hover, document
+symbols and formatting. Rename, references and code actions are not supported.
+
+Optional UltiSnips templates: module, seq, comb, genfor, inst. The genfor snippet
+includes the literal backticks required for compile-time loops.
+
+ vim:tw=78:ts=8:noet:ft=help:norl:

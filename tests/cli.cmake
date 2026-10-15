@@ -176,3 +176,30 @@ foreach(arguments "inspect;--stdout" "inspect;--format=" "inspect;--format=xml" 
         message(FATAL_ERROR "Invalid inspection arguments were accepted: ${arguments}\n${errors}")
     endif()
 endforeach()
+
+file(WRITE "${WORK_DIR}/trace.slip" "module traced(clk,a,y) { logic clk,a,y; seq(clk) { y=a; } }\n")
+execute_process(COMMAND "${SLIP_BIN}" inspect "${WORK_DIR}/trace.slip" --signal traced.a --format=json
+    RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE errors TIMEOUT 15)
+string(JSON selected GET "${output}" modules 0 ports 0 name)
+string(JSON consumer GET "${output}" modules 0 ports 0 uses 0 kind)
+if(NOT result EQUAL 0 OR NOT selected STREQUAL "a" OR NOT consumer STREQUAL "seq assignment")
+    message(FATAL_ERROR "Signal query did not retain references: ${result}\n${output}${errors}")
+endif()
+execute_process(COMMAND "${SLIP_BIN}" inspect "${WORK_DIR}/trace.slip" --signal traced.missing --diagnostics=json
+    RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE errors TIMEOUT 15)
+if(NOT result EQUAL 2 OR NOT errors MATCHES "unknown signal")
+    message(FATAL_ERROR "Unknown signal query should fail: ${result}\n${errors}")
+endif()
+
+# External reflection works while a project's entry is syntactically incomplete.
+file(MAKE_DIRECTORY "${WORK_DIR}/reflection")
+file(WRITE "${WORK_DIR}/reflection/ext.sv" "module ext #(parameter type T=logic [7:0]) (input T a, output T y); assign y=a; endmodule\n")
+file(WRITE "${WORK_DIR}/reflection/broken.slip" "module top { ext u { .\n")
+file(WRITE "${WORK_DIR}/reflection/slip.conf" "entry=broken.slip\nip_dir=.\ntop=top\n")
+execute_process(COMMAND "${SLIP_BIN}" inspect --interface ext --project "${WORK_DIR}/reflection/slip.conf" --format=json
+    RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE errors TIMEOUT 15)
+string(JSON type_parameter GET "${output}" modules 0 parameters 0 is_type)
+string(JSON port GET "${output}" modules 0 ports 0 name)
+if(NOT result EQUAL 0 OR NOT type_parameter OR NOT port STREQUAL "a")
+    message(FATAL_ERROR "Independent external reflection failed: ${result}\n${output}${errors}")
+endif()

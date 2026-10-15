@@ -1,0 +1,22 @@
+module producer #(param N = 2, param type T = types::packet_t) (a, links) {
+    input T a;
+    interface Stream.source links[0:N-1];
+    `for (`i = 0; `i < N; `i++) {
+        assign links[`i].data = a;
+    }
+}
+
+module passthrough #(param type T = types::packet_t) (a, y) {
+    input T a;
+    output T y;
+    assign y = a;
+}
+
+(* keep_hierarchy = "yes" *) module top #(param N = 3) (a, y, z) {
+    input types::packet_t a;
+    output types::packet_t y, z;
+    interface Stream #(.T(types::packet_t)) links[0:N-1];
+    producer #(.N(N), .T(types::packet_t)) u_source { .a, .links };
+    array_reader #(.N(N)) u_reader { .links, .y };
+    passthrough #(.T(types::packet_t)) u_last { .a(links[N-1].data), .y(z) };
+}

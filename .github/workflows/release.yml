@@ -80,6 +80,16 @@ jobs:
           "$RUNNER_TEMP/slip/bin/slip" --version
           "$RUNNER_TEMP/slip/bin/slip" check tests/fixtures/simple.slip
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Package VS Code extension
+        working-directory: editors/vscode
+        run: >-
+          npx --yes @vscode/vsce@4.0.0 package --no-dependencies
+          --out "$GITHUB_WORKSPACE/slip-language-${{ steps.vars.outputs.tag }}.vsix"
+
       - name: Package release archive
         id: package
         shell: bash
@@ -87,18 +97,30 @@ jobs:
           TAG="${{ steps.vars.outputs.tag }}"
           DIST_NAME="slip-${TAG}-linux-x86_64"
           DIST_DIR="$RUNNER_TEMP/${DIST_NAME}"
-          mkdir -p "${DIST_DIR}/bin"
+          EDITORS_NAME="slip-editors-${TAG}"
+          EDITORS_DIR="$RUNNER_TEMP/${EDITORS_NAME}"
+          mkdir -p "${DIST_DIR}/bin" "${DIST_DIR}/share/slip" "$EDITORS_DIR"
 
-          cp "$RUNNER_TEMP/slip/bin/slip" "${DIST_DIR}/bin/"
+          cp "$RUNNER_TEMP/slip/bin/slip" "$RUNNER_TEMP/slip/bin/slip-lsp" "${DIST_DIR}/bin/"
           strip "${DIST_DIR}/bin/slip"
-          cp LICENSE README.md "${DIST_DIR}/"
+          cp LICENSE README.md README_CN.md "${DIST_DIR}/"
+          cp -R editors docs examples "${DIST_DIR}/share/slip/"
+          cp -R editors/. "$EDITORS_DIR/"
+          cp LICENSE "$EDITORS_DIR/"
+          cp docs/tex/user-manual.pdf user-manual.pdf
 
-          tar -czvf "${DIST_NAME}.tar.gz" -C "$RUNNER_TEMP" "${DIST_NAME}"
+          tar --exclude=__pycache__ --exclude='*.pyc' --exclude='*.vsix' \
+            -czf "${DIST_NAME}.tar.gz" -C "$RUNNER_TEMP" "${DIST_NAME}"
+          tar --exclude=__pycache__ --exclude='*.pyc' --exclude='*.vsix' \
+            -czf "${EDITORS_NAME}.tar.gz" -C "$RUNNER_TEMP" "${EDITORS_NAME}"
           sha256sum "${DIST_NAME}.tar.gz" > "${DIST_NAME}.tar.gz.sha256"
-          sha256sum "${DIST_NAME}.tar.gz" > SHA256SUMS.txt
+          sha256sum "${DIST_NAME}.tar.gz" "${EDITORS_NAME}.tar.gz" \
+            "slip-language-${TAG}.vsix" user-manual.pdf > SHA256SUMS.txt
 
           echo "archive=${DIST_NAME}.tar.gz" >> "$GITHUB_OUTPUT"
           echo "sha256=${DIST_NAME}.tar.gz.sha256" >> "$GITHUB_OUTPUT"
+          echo "editors=${EDITORS_NAME}.tar.gz" >> "$GITHUB_OUTPUT"
+          echo "vsix=slip-language-${TAG}.vsix" >> "$GITHUB_OUTPUT"
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
@@ -112,4 +134,7 @@ jobs:
           files: |
             ${{ steps.package.outputs.archive }}
             ${{ steps.package.outputs.sha256 }}
+            ${{ steps.package.outputs.editors }}
+            ${{ steps.package.outputs.vsix }}
+            user-manual.pdf
             SHA256SUMS.txt

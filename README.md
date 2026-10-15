@@ -8,6 +8,8 @@ English | **[中文](README_CN.md)** | **[User Manual (PDF)](docs/tex/user-manua
 
 > The IEEE standard documents referenced during development (1364-2005, 1800-2017) are not distributed with this repository — obtain them from [IEEE Xplore](https://ieeexplore.ieee.org/).
 
+[Project builds, profiles, warning policy and debugging](docs/practical-projects.md) · [VS Code and LSP](editors/vscode/README.md) · [Vim / Neovim](editors/vim/README.md) · [SV interoperability example](examples/interop/slip.conf)
+
 ## Overview
 
 Slip is a compact hardware description language designed as syntactic sugar over SystemVerilog. It provides a streamlined syntax for common hardware design patterns — signal declarations, combinational and sequential logic, module instantiation with regex port mapping, and compile-time metaprogramming — while generating clean, human-readable SystemVerilog output.
@@ -17,7 +19,7 @@ Slip is a C++20 compiler that links directly to [slang](https://github.com/MikeP
 ## Features
 
 - **Inferred port directions** — no `input`/`output` keywords; directions are derived from signal usage
-- **Implicit signal declarations** — referenced names that aren't ports or instances become `logic` signals automatically, annotated with `// implicit, no width` for easy review
+- **Implicit signal declarations** — automatically created ports and internal signals carry `implicit port` / `implicit logic` comments; inferred directions, defaulted types and width sources are also marked
 - **Instance port width inference** — signals connected to instance ports automatically inherit the target port's width, annotated with `// width from X.Y` in generated SV
 - **Sequential blocks** — `seq (clk, neg: rst_n) { ... }` generates `always_ff` with automatic blocking-to-nonblocking conversion
 - **Combinational blocks** — `comb { ... }` generates `always_comb`
@@ -297,6 +299,17 @@ connected as a group, and exposed through modport ports. Field access participat
 in direction, width and driver checks. See [native interfaces](docs/native-interfaces.md)
 and the [parameterized example](examples/native-interface/slip.conf).
 
+### Generated declaration comments
+
+Generated SV marks automatically created declarations with `implicit port` or
+`implicit logic`. A listed port whose direction is inferred carries
+`inferred direction: input/output/inout`; an omitted base type carries
+`inferred type: logic`. Existing `no width` and `width from module.port` details
+remain available. Comments appear immediately before the corresponding declaration,
+including non-ANSI port declarations. `inspect` exposes the same provenance;
+JSON includes `direction_inferred` and `type_inferred`. Listing a port still
+counts as an explicit declaration for strict checking.
+
 ## Installation
 
 ### Native C++ compiler
@@ -319,6 +332,16 @@ cmake --install build/release --prefix "$HOME/.local"
 ```
 
 With `$HOME/.local/bin` on `PATH`, `slip` runs the C++ compiler.
+
+### Release packages
+
+[GitHub Releases](https://github.com/himingway/slip/releases) provide a Linux
+x86_64 archive containing `bin/slip`, the optional Python `bin/slip-lsp`, editor
+sources, documentation and examples under `share/slip`. Add the extracted `bin`
+directory to PATH. Editor packages are also available separately: install the
+`.vsix` in VS Code, or add the editor archive's `vim` directory to Vim/Neovim's
+runtime path (see the included README). Python 3.10+ is required for LSP and
+formatting. The PDF manual and `SHA256SUMS.txt` are separate release assets.
 
 ## Usage
 

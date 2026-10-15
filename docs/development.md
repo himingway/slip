@@ -186,8 +186,25 @@ Defun string methods support the documented helpers and diagnose unsupported
 arities. PCRE2 covers the common Python
 regex syntax used by Slip, including named groups and inline flags, but it is
 not an implementation of every Python `re` extension. External SV definitions are indexed before use and reflected lazily. Interface
-ports and type parameters on modules actually connected to Slip are explicitly
+ports outside the documented native-interface subset on modules actually connected to Slip are explicitly
 rejected; unused definitions do not fail merely because of those reflection limits.
 
 This suite establishes compatibility for existing examples and test programs;
 it is not a formal proof of equivalence for every possible input.
+
+## Practical project tooling
+
+See [project builds and debugging](practical-projects.md) and the
+[VS Code/LSP package](../editors/vscode/README.md). Core additions are split into
+`src/sources.cpp` (filelists), `src/outputs.cpp` (ownership and build metadata) and
+`src/diagnostics.cpp` (warning policy and local waivers). Type parameter metadata
+is retained through parsing, reflection and specialization. Native interface array
+objects carry dimensions and element descriptors; only the physical root instance
+is emitted. Public package/type-parameter/interface ports use ANSI declarations;
+ports depending on module-local typedefs retain their required scope.
+
+The optional `slip-lsp` script uses Python's standard library. CMake installs it
+alongside the native compiler, which retains its Python-free runtime. When Python
+3.10+ and Node are available, CTest also exercises the real stdio server and the
+VS Code provider adapter. The interop behavior test compiles generated filelists
+with Verilator and checks package types and interface arrays for 256 input values.

@@ -8,11 +8,23 @@
 namespace slip {
 using Environment = std::vector<std::pair<std::string, std::string>>;
 using SourceMaps = std::map<std::string, std::vector<Location>>;
+struct SourceInputs {
+    std::vector<std::string> files, includes, defines;
+    std::set<std::filesystem::path> dependencies;
+    void filelist(const std::filesystem::path& file);
+    void finish_libraries();
+private:
+    std::set<std::filesystem::path> active;
+    std::vector<std::pair<std::filesystem::path, Location>> libraries;
+    std::vector<std::string> extensions = {".v", ".sv"};
+};
 struct InterfacePort {
     std::string name, direction, width, array;
     bool is_signed = false;
     bool native = false;
     std::string interface_type = {}, modport = {};
+    bool typed = false;
+    std::string type = "logic";
 };
 struct Interface {
     std::vector<NamedValue> parameters, localparams;
@@ -40,6 +52,7 @@ public:
     std::map<std::string, NativeInterface> native_interfaces;
     const Interface* reflect(const std::string& name);
     const NativeInterface& reflect_native(const std::string& name, Location loc);
+    void collect_inputs(Result& result) const;
     std::int64_t constant(std::string_view expression, const Environment& environment, Location loc);
     void validate(const std::map<std::string, std::string>& modules, const SourceMaps& source_maps,
                   bool widths_as_errors, std::vector<Diagnostic>& warnings, bool native_interfaces = false);
@@ -80,4 +93,6 @@ std::string read_file(const std::filesystem::path& file);
 std::string join(const std::vector<std::string>& parts, std::string_view delimiter);
 std::string trim(std::string_view value);
 void walk_expression(const ExprPtr& expr, const std::function<void(const Expr&)>& visitor);
+void apply_diagnostic_policy(Result& result, const Options& options,
+                             const std::map<std::string, std::string>& sources);
 } // namespace slip

@@ -1,0 +1,88 @@
+{
+  "name": "slip-language",
+  "displayName": "Slip HDL",
+  "description": "Slip syntax, compiler diagnostics, port completion, navigation and formatting.",
+  "version": "0.1.0",
+  "publisher": "slip-lang",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Formatters"
+  ],
+  "activationEvents": [
+    "onLanguage:slip"
+  ],
+  "main": "./extension.js",
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false
+    }
+  },
+  "contributes": {
+    "languages": [
+      {
+        "id": "slip",
+        "aliases": [
+          "Slip",
+          "slip"
+        ],
+        "extensions": [
+          ".slip"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "slip",
+        "scopeName": "source.slip",
+        "path": "./syntaxes/slip.tmLanguage.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "slip",
+        "path": "./snippets.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "slip.restartLanguageServer",
+        "title": "Slip: Restart Language Server"
+      }
+    ],
+    "configuration": {
+      "title": "Slip",
+      "properties": {
+        "slip.compilerPath": {
+          "type": "string",
+          "default": "slip",
+          "description": "Slip compiler executable."
+        },
+        "slip.pythonPath": {
+          "type": "string",
+          "default": "python3",
+          "description": "Python 3.10 or newer for the language server."
+        },
+        "slip.project": {
+          "type": "string",
+          "default": "",
+          "description": "Explicit slip.conf path; empty searches source parent directories."
+        },
+        "slip.profile": {
+          "type": "string",
+          "default": "",
+          "description": "Named project profile."
+        }
+      }
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/himingway/slip.git",
+    "directory": "editors/vscode"
+  }
+}

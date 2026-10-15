@@ -91,7 +91,8 @@ JSON 增加模块级 `interfaces` 数组，包含 `name`、`type`、`modport`、
 ## 范围
 
 当前支持顶层声明的数据字段，以及由 input/output/inout 数据字段组成的 modport。
-暂不支持 interface 实例/端口数组、嵌套 interface、类型参数、clocking、
+支持 interface 实例/端口数组（包括多维数组）、值参数和类型参数。
+暂不支持嵌套 interface、clocking、
 modport 表达式/重命名字段、ref 字段及 import/export task/function。
 未使用的复杂 modport 不阻断其他受支持视图；实际使用时会给出明确诊断。
 
@@ -104,3 +105,26 @@ build/release/slip inspect --project examples/native-interface/slip.conf --forma
 ```
 
 下游工具需要同时读取生成的模块和外部 interface/IP 源码。
+
+## 数组、package 类型和类型参数
+
+```slip
+interface Stream #(.T(types::packet_t)) links[0:N-1];
+producer #(.N(N)) source { .links };
+consumer sink { .link(links[0]) };
+```
+
+接口端口声明可写 `interface Stream.source links[0:N-1];`。
+整组连接检查每一维大小，元素连接和字段读写仍检查 modport 方向与多驱动。
+数组下标必须是编译时常量；生成循环可以展开下标。数组维度参与生成参数冻结，
+按实例的不同尺寸创建特化；元素和字段展开受 `max_expanded_statements` 约束。
+
+外部 package 类型直接使用 `types::packet_t`，常量和函数也可使用限定名称。
+Slip 模块类型参数写作 `param type T = logic [7:0]`，实例覆盖使用
+`.T(types::packet_t)` 或 `.T(logic [15:0])`。普通 RTL 类型参数保留为 SV 参数；
+参与生成控制的类型参数按绑定特化，并保留 `$typename` 冻结检查。
+推断连接类型时保留具名类型与类型参数绑定，而非只继承默认位宽。
+
+端口类型在模块头可见时生成 ANSI 声明；依赖模块内 typedef 的端口采用非 ANSI 声明。
+支持 `(* keep = "true" *)` 等 SV 属性，应用于模块、信号、实例和过程块。
+完整的 package、类型参数、数组与属性示例见 [examples/interop](../examples/interop/slip.conf)。

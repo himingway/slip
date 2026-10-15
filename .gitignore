@@ -28,3 +28,8 @@ texput.log
 # IEEE standard documents (copyrighted; obtain from IEEE)
 docs/1364-2005.pdf
 docs/1800-2017.pdf
+
+# Optional editor tooling artifacts
+__pycache__/
+*.pyc
+*.vsix

@@ -1,0 +1,32 @@
+snippet module "Slip module" b
+module ${1:name} (${2:clk, rst_n}) {
+	$0
+}
+endsnippet
+
+snippet seq "Clocked process" b
+seq (${1:clk}, neg: ${2:rst_n}) {
+	if (!$2) {
+		$0
+	} else {
+	}
+}
+endsnippet
+
+snippet comb "Combinational process" b
+comb {
+	$0
+}
+endsnippet
+
+snippet genfor "Compile-time generation loop" b
+\`for (\`${1:i} = 0; \`$1 < ${2:N}; \`$1++) {
+	$0
+}
+endsnippet
+
+snippet inst "Module instance" b
+${1:module_type} ${2:u_name} {
+	.$0
+};
+endsnippet

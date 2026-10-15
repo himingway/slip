@@ -56,6 +56,7 @@ template<class... Ts> Overloaded(Ts...) -> Overloaded<Ts...>;
 
 struct Statement;
 using Body = std::vector<Statement>;
+struct NamedValue { std::string name; ExprPtr value; bool is_type = false; };
 struct SignalDecl {
     std::string name;
     ExprPtr width;
@@ -63,6 +64,8 @@ struct SignalDecl {
     bool is_signed = false;
     std::vector<std::pair<ExprPtr, ExprPtr>> dimensions = {};
     std::string type = "logic", direction = {};
+    bool type_explicit = true;
+    std::vector<NamedValue> attributes = {};
 };
 struct LocalParam { std::string name; ExprPtr value; };
 struct Assignment { ExprPtr target, value; bool nonblocking = false; };
@@ -72,6 +75,7 @@ struct Process {
     std::string clock, reset, edge;
     Body body;
     std::string clock_edge = "pos";
+    std::vector<NamedValue> attributes = {};
 };
 struct If { ExprPtr condition; Body yes, no; bool meta = false; };
 struct For {
@@ -82,7 +86,6 @@ struct For {
 };
 struct CaseArm { std::vector<ExprPtr> patterns; Body body; };
 struct Case { std::string kind; ExprPtr value; std::vector<CaseArm> arms; };
-struct NamedValue { std::string name; ExprPtr value; };
 struct Connection {
     std::string port;
     ExprPtr value;
@@ -93,6 +96,8 @@ struct Instance {
     std::string module, name;
     std::vector<NamedValue> parameters;
     std::vector<Connection> connections;
+    std::vector<NamedValue> attributes = {};
+    std::string array = {};
 };
 struct Group { Body body; };
 struct TypeDecl {
@@ -108,6 +113,8 @@ struct BundleUse {
     bool native = false;
     std::string modport;
     std::vector<Connection> connections;
+    std::vector<std::pair<ExprPtr, ExprPtr>> dimensions = {};
+    std::vector<NamedValue> attributes = {};
 };
 struct Statement {
     Location loc;
@@ -122,6 +129,8 @@ struct Module {
     std::vector<PortDecl> ports;
     Body body;
     std::vector<std::pair<std::string, std::int64_t>> frozen = {};
+    std::vector<std::pair<std::string, std::string>> frozen_types = {};
+    std::vector<NamedValue> attributes = {};
 };
 struct Function {
     Location loc;
@@ -141,6 +150,7 @@ struct Unit {
 
 Unit parse(std::string_view source, std::string filename = "<input>");
 ExprPtr parse_expression(std::string_view source, std::string filename = "<expression>");
+ExprPtr parse_type_expression(std::string_view source, std::string filename = "<type>");
 std::string to_sv(const ExprPtr& expr);
 std::string unquote(std::string_view text);
 std::vector<std::string> references(const ExprPtr& expr);

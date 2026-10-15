@@ -182,18 +182,14 @@ TEST_CASE(compilation_result_survives_ip_files_and_options_destruction) {
     slip::write_outputs(result, output.path());
     CHECK(std::filesystem::file_size(output.path()/"m.sv") > 0);
 }
-TEST_CASE(ip_type_parameters_and_unconnected_interface_ports_have_explicit_diagnostics) {
-    for (const auto& [name, source, message] : std::vector<std::tuple<std::string, std::string, std::string>>{
-             {"typed", "module typed #(parameter type T=logic)(input T a); endmodule", "type parameters"},
-             {"interface", "interface bus_if; logic a; modport mp(input a); endinterface module ext(bus_if.mp bus); endmodule", "unconnected interface port"}}) {
-        test::Directory directory;
-        const auto file = directory.write("unit.sv", source);
-        slip::Options options; options.ip_dirs = {directory.path()};
-        CHECK(slip::compile("module top {}", "top.slip", options).modules.contains("top"));
-        const auto used = name == "typed" ? "module top { typed u {.a(1'b0)}; }" : "module top { ext u {}; }";
-        auto error = test::error([&] { slip::compile(used, "top.slip", options); }, name == "typed" ? "E_IP" : "E_CONNECTION", message);
-        CHECK(error.location.file == (name == "typed" ? file.string() : "top.slip"));
-    }
+TEST_CASE(ip_type_parameters_work_and_unconnected_interfaces_report_diagnostics) {
+    test::Directory directory;
+    directory.write("unit.sv", "module typed #(parameter type T=logic)(input T a); endmodule\ninterface bus_if; logic a; modport mp(input a); endinterface module ext(bus_if.mp bus); endmodule\n");
+    slip::Options options; options.ip_dirs = {directory.path()};
+    CHECK(slip::compile("module top {}", "top.slip", options).modules.contains("top"));
+    CHECK(slip::compile("module top { typed u {.a(1'b0)}; }", "top.slip", options).modules.contains("top"));
+    const auto error = test::error([&] { slip::compile("module top { ext u {}; }", "top.slip", options); }, "E_CONNECTION", "unconnected interface port");
+    CHECK(error.location.file == "top.slip");
 }
 TEST_CASE(filelist_cycles_and_missing_sources_have_io_diagnostics) {
     test::Directory directory;

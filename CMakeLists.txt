@@ -58,6 +58,9 @@ add_library(slip_core
     src/functions.cpp
     src/pattern.cpp
     src/slang_backend.cpp
+    src/sources.cpp
+    src/outputs.cpp
+    src/diagnostics.cpp
     src/compiler.cpp)
 add_library(slip::core ALIAS slip_core)
 target_include_directories(slip_core PUBLIC
@@ -129,6 +132,7 @@ endif()
 add_executable(slip src/main.cpp src/project.cpp)
 target_link_libraries(slip PRIVATE slip_core)
 install(TARGETS slip RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(PROGRAMS editors/vscode/server/slip_lsp.py DESTINATION ${CMAKE_INSTALL_BINDIR} RENAME slip-lsp)
 
 if(SLIP_FUZZING)
     add_executable(slip_mutation_fuzz tests/fuzz/target.cpp tests/fuzz/mutation.cpp)
@@ -171,7 +175,8 @@ if(BUILD_TESTING)
         tests/regression/diagnostics.cpp
         tests/regression/lint.cpp
         tests/regression/features.cpp
-        tests/regression/runtime.cpp)
+        tests/regression/runtime.cpp
+        tests/regression/project_workflow.cpp)
     add_executable(slip_regressions tests/regression_main.cpp ${_slip_regressions})
     target_link_libraries(slip_regressions PRIVATE slip::core Threads::Threads)
     foreach(_slip_source IN LISTS _slip_regressions)
@@ -198,8 +203,28 @@ if(BUILD_TESTING)
         "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/tests/project"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/project.cmake")
 
+    find_package(Python3 3.10 QUIET COMPONENTS Interpreter)
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME compiler.editor.lsp COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/editor/lsp_test.py" "$<TARGET_FILE:slip>")
+        set_tests_properties(compiler.editor.lsp PROPERTIES TIMEOUT 90)
+        find_program(SLIP_NODE node)
+        if(SLIP_NODE)
+            add_test(NAME compiler.editor.vscode COMMAND ${CMAKE_COMMAND} -E env
+                "SLIP_TEST_PYTHON=${Python3_EXECUTABLE}" "${SLIP_NODE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/editor/extension_test.js" "$<TARGET_FILE:slip>")
+            set_tests_properties(compiler.editor.vscode PROPERTIES TIMEOUT 90)
+        endif()
+    endif()
     find_program(SLIP_VERILATOR verilator)
     if(SLIP_VERILATOR)
+        add_test(NAME compiler.behavior.interop COMMAND ${CMAKE_COMMAND}
+            "-DSLIP_BIN=$<TARGET_FILE:slip>"
+            "-DVERILATOR=${SLIP_VERILATOR}"
+            "-DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+            "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/tests/interop"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/interop.cmake")
+        set_tests_properties(compiler.behavior.interop PROPERTIES TIMEOUT 180 LABELS behavior)
         foreach(_slip_behavior pipeline combinational state_machine array_parameters features)
             set(_slip_behavior_source "${CMAKE_CURRENT_SOURCE_DIR}/tests/behavior")
             if(NOT _slip_behavior STREQUAL "pipeline")

@@ -48,7 +48,7 @@ module decode(clk, input_packet, output_packet) {
 ```
 
 `typedef` 可位于顶层或模块体；跨模块共享的类型放在顶层或被 include 的文件中。
-顶层类型在各模块内定义。使用自定义端口类型时生成非 ANSI 端口声明，以保持类型作用域。
+顶层类型在各模块内定义。依赖模块内 typedef 的端口生成非 ANSI 声明，以保持类型作用域；package 类型、类型参数及 interface 端口优先生成 ANSI 声明。
 结构体支持 packed 数据字段和嵌套的已声明类型；不同字段会参与独立的驱动和反馈检查。
 也可写 `enum [1:0] { IDLE, RUN } state;` 创建匿名类型变量。
 省略枚举基类型时采用 SV 的 `int`，未指定的枚举值从前一个值递增。
@@ -157,3 +157,24 @@ module control #(param DEPTH = 8) (clk, valid) {
 实际类型大小由 SV 类型决定。连接来源 `bundle` 表示由分组连接展开。
 
 测试包括独立 RTL/算术模型的 160 周期组合功能仿真、故意输入非法值时的运行时断言失败检查，以及上述功能的正、反例回归。
+
+## 隐式声明与推断注释
+
+生成的 SV 在声明前标记来源：
+
+```systemverilog
+// implicit port, inferred direction: input, inferred type: logic, no width
+input logic enable;
+
+// inferred direction: output
+output logic [7:0] result;
+
+// implicit logic, width from child.data
+logic [7:0] internal_data;
+```
+
+端口名称已出现在模块头时，仍会标记推断出的方向；未写类型的端口或裸信号声明
+会注明默认的 `logic` 类型。非 ANSI 端口的注释紧邻其实际声明。
+RTL 函数中省略基本类型的局部变量、参数和返回值也有类型注释。
+`inspect` 的文本输出与 JSON（`direction_inferred` / `type_inferred`）同步保留这些信息。
+这些注释不改变隐式声明的严格检查规则。

@@ -4,6 +4,10 @@
 #include <map>
 
 namespace slip {
+struct IRSignalReference {
+    Location loc;
+    std::string kind, expression;
+};
 struct IRSignal {
     std::string name, width, array;
     bool is_signed = false;
@@ -14,6 +18,9 @@ struct IRSignal {
     std::string type = "logic";
     bool infer_width = true, direction_explicit = false;
     bool interface_field = false, interface_port = false;
+    bool type_inferred = false;
+    std::vector<IRSignalReference> drivers, uses;
+    std::vector<NamedValue> attributes = {};
 };
 struct IRConnectionInfo {
     std::string port, direction, width, array, signal, origin;
@@ -24,6 +31,8 @@ struct IRInstance {
     std::string module, name;
     std::vector<std::pair<std::string, std::string>> parameters, connections;
     std::vector<IRConnectionInfo> connection_details = {};
+    std::vector<NamedValue> attributes = {};
+    std::string array = {};
 };
 struct IRNativeInterface {
     Location loc;
@@ -32,6 +41,9 @@ struct IRNativeInterface {
     std::vector<std::pair<std::string, std::string>> parameters;
     std::vector<IRSignal> fields;
     std::map<std::string, std::map<std::string, std::string>> modports;
+    std::string array = {};
+    std::vector<std::string> elements = {};
+    std::vector<NamedValue> attributes = {};
 };
 struct IRModule {
     Location loc;
@@ -42,10 +54,12 @@ struct IRModule {
     std::vector<Process> processes;
     std::vector<IRInstance> instances;
     std::vector<std::pair<std::string, std::int64_t>> frozen_parameters;
+    std::vector<std::pair<std::string, std::string>> frozen_type_parameters = {};
     std::vector<Location> localparam_locations, assignment_locations, process_locations;
     Body declarations;
     std::map<std::string, std::vector<std::string>> bundles;
     std::map<std::string, std::string> bundle_types;
     std::map<std::string, IRNativeInterface> native_interfaces;
+    std::vector<NamedValue> attributes = {};
 };
 } // namespace slip
