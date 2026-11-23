@@ -227,3 +227,29 @@ TEST_CASE(concurrent_compilers_isolate_functions_ip_and_constant_caches) {
         test::contains(output,"output logic ["+std::to_string(i)+":0] y");
     }
 }
+TEST_CASE(defun_preserves_numeric_captures_and_handles_slice_edge_cases) {
+    const auto sv = test::module(R"slip(
+defun tag(s):
+    return "ch_" + s.upper().zfill(4)
+defun inc(n):
+    return n + 1
+defun flag(n):
+    return "yes" if n else "no"
+defun sum2(a, b):
+    return a + b
+module leaf(p_00, c_05, f_0, s_1_2) { logic p_00, c_05, f_0, s_1_2; }
+module m {
+    leaf u {
+        "p_(.*)" => "$tag(\1)",
+        "c_(.*)" => "next_$inc(\1)_$substr(abcdef, -2, 2)_$replace(, , x)",
+        "f_(.*)" => "flag_$flag(\1)",
+        "s_(.*)_(.*)" => "sum_$sum2(\1, \2)"
+    };
+}
+)slip");
+    test::contains(sv, ".p_00(ch_0000)");
+    test::contains(sv, ".c_05(next_6_ef_x)");
+    test::contains(sv, ".f_0(flag_no)");
+    test::contains(sv, ".s_1_2(sum_3)");
+    test::rejected("module leaf(p_abcd) { logic p_abcd; } module m { leaf u { \"p_(.*)\" => \"$bit_select(\\1, 3, -1)\" }; }", "E_FUNCTION", "out of range");
+}

@@ -56,6 +56,7 @@ struct IRModule {
     std::vector<std::pair<std::string, std::int64_t>> frozen_parameters;
     std::vector<std::pair<std::string, std::string>> frozen_type_parameters = {};
     std::vector<Location> localparam_locations, assignment_locations, process_locations;
+    std::vector<std::pair<bool, std::size_t>> header_order = {}; // true: declarations[idx] TypeDecl, false: localparams[idx]
     Body declarations;
     std::map<std::string, std::vector<std::string>> bundles;
     std::map<std::string, std::string> bundle_types;

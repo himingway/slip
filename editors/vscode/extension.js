@@ -177,17 +177,42 @@ async function activate(context) {
     const output = vscode.window.createOutputChannel('Slip');
     context.subscriptions.push(output);
     let restarting = Promise.resolve();
+    let disposed = false;
     const performRestart = async () => {
         if (activeSession) { await activeSession.dispose(); activeSession = undefined; }
-        try { activeSession = await start(context, output); }
-        catch (error) { output.appendLine(String(error)); vscode.window.showErrorMessage(`Slip language server could not start: ${error.message}`); }
+        if (disposed) return;
+        try {
+            const session = await start(context, output);
+            if (disposed) { await session.dispose(); return; }
+            activeSession = session;
+        } catch (error) {
+            if (!disposed) {
+                output.appendLine(String(error));
+                vscode.window.showErrorMessage(`Slip language server could not start: ${error.message}`);
+            }
+        }
     };
     const restart = () => { restarting = restarting.then(performRestart); return restarting; };
+    const controller = {
+        async deactivate() {
+            disposed = true;
+            await restarting;
+            if (activeSession) { await activeSession.dispose(); activeSession = undefined; }
+        }
+    };
+    activeDeactivate = controller;
+    context.subscriptions.push({ dispose() { disposed = true; } });
     context.subscriptions.push(vscode.commands.registerCommand('slip.restartLanguageServer', restart));
     context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(event => {
         if (event.affectsConfiguration('slip')) restart();
     }));
     await restart();
 }
-async function deactivate() { if (activeSession) { await activeSession.dispose(); activeSession = undefined; } }
+let activeDeactivate;
+async function deactivate() {
+    const controller = activeDeactivate;
+    activeDeactivate = undefined;
+    if (controller) await controller.deactivate();
+    else if (activeSession) { await activeSession.dispose(); activeSession = undefined; }
+}
 module.exports = { activate, deactivate, Connection };

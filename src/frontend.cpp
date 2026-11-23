@@ -333,13 +333,28 @@ class Parser {
         if (auto concat = std::get_if<Concat>(&value->node)) return std::all_of(concat->parts.begin(), concat->parts.end(), [&](auto& part) { return assignable(part); });
         return false;
     }
+    std::size_t skip_brackets(std::size_t index) const {
+        if (peek(index).text != "[") return index;
+        unsigned depth = 0;
+        do {
+            const auto& text = peek(index).text;
+            if (text == "[") ++depth;
+            else if (text == "]") --depth;
+            ++index;
+        } while (depth && peek(index).kind != TokenKind::end);
+        return index;
+    }
     SignalDecl declaration() {
         SignalDecl value;
         value.type_explicit = false;
         if (peek().text == "input" || peek().text == "output" || peek().text == "inout") value.direction = take().text;
         value.is_signed = eat("signed");
+        const auto after_brackets = peek(1).text == "[" ? skip_brackets(1) : 1;
+        const bool packed_custom = peek().kind == TokenKind::name && !keywords.contains(peek().text) &&
+            peek(1).text == "[" && peek(after_brackets).kind == TokenKind::name &&
+            !keywords.contains(peek(after_brackets).text);
         if (peek().text == "logic" || peek().text == "bit" || peek().text == "int" ||
-            (peek().kind == TokenKind::name && (peek(1).kind == TokenKind::name || peek(1).text == "::"))) {
+            (peek().kind == TokenKind::name && (peek(1).kind == TokenKind::name || peek(1).text == "::")) || packed_custom) {
             value.type = take().text;
             while (eat("::")) value.type += "::" + member_name().text;
             value.type_explicit = true;
@@ -470,7 +485,9 @@ class Parser {
             expect("(");
             if (!meta && (peek().text == "int" || peek().text == "integer")) take();
             auto var = name(meta); expect("="); auto init = expr(); expect(";");
-            auto condition = expr(); expect(";"); auto step_var = name(meta); auto op = take();
+            auto condition = expr(); expect(";"); auto step_var = name(meta);
+            if (!meta && var.text != step_var.text) throw Error(step_var.loc, "E_PARSE", "for loop step variable must match loop variable");
+            auto op = take();
             ExprPtr step;
             if ((op.text == "+" || op.text == "-") && eat(op.text))
                 step = expression(op.loc, Binary{op.text, expression(op.loc, Identifier{step_var.text, meta}), expression(op.loc, Literal{"1"})});
@@ -525,9 +542,13 @@ class Parser {
             expect(";"); return {start.loc, std::move(instance)};
         }
         if (peek().text == "{") return {start.loc, assignment()};
-        if (peek().kind == TokenKind::name && !keywords.contains(peek().text) &&
-            (peek(1).text == "." || peek(1).text == "=" || peek(1).text == "<=" || peek(1).text == "[" ||
-             (peek(1).text.size() > 1 && peek(1).text.back() == '='))) return {start.loc, assignment()};
+        if (peek().kind == TokenKind::name && !keywords.contains(peek().text)) {
+            std::size_t after = 1;
+            while (peek(after).text == "[") after = skip_brackets(after);
+            const auto& next = peek(after);
+            if (next.text == "." || next.text == "=" || next.text == "<=" ||
+                (next.text.size() > 1 && next.text.back() == '=')) return {start.loc, assignment()};
+        }
         auto signal = declaration();
         Body declarations{{start.loc, signal}};
         while (eat(",")) {
@@ -686,7 +707,11 @@ Statement Parser::type_declaration() {
     } else {
         if (!alias) throw Error(loc, "E_PARSE", "expected enum or struct");
         auto value = declaration(); expect(";");
-        type.name = value.name; type.sv = "typedef " + type_text(value) + " " + value.name + ";";
+        type.name = value.name;
+        std::string dims;
+        if (value.array_first) dims += " [" + to_sv(value.array_first) + ":" + to_sv(value.array_last) + "]";
+        for (const auto& [first, last] : value.dimensions) dims += " [" + to_sv(first) + ":" + to_sv(last) + "]";
+        type.sv = "typedef " + type_text(value) + " " + value.name + dims + ";";
         return {loc, std::move(type)};
     }
     auto last = name(); expect(";");

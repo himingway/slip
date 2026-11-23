@@ -47,6 +47,14 @@ TEST_CASE(outputs_reject_modified_destinations_and_symlinks_before_publishing) {
     test::error([&] { slip::write_outputs(result, directory.path()); }, "E_IO", "symlink");
     CHECK(read(target) == "do not overwrite");
     CHECK(!std::filesystem::exists(directory.path()/".slip-lock"));
+    std::filesystem::remove(directory.path()/"m.sv");
+    directory.write("a.sv", "// existing untracked user file\n");
+    test::error([&] { slip::write_outputs(result, directory.path()); }, "E_OUTPUT_MODIFIED");
+    CHECK(read(directory.path()/"a.sv") == "// existing untracked user file\n");
+    test::Directory fresh;
+    fresh.write("m.sv", "// pre-existing user file without manifest\n");
+    test::error([&] { slip::write_outputs(result, fresh.path()); }, "E_OUTPUT_MODIFIED");
+    CHECK(read(fresh.path()/"m.sv") == "// pre-existing user file without manifest\n");
 }
 TEST_CASE(output_metadata_tracks_includes_ip_headers_filelists_and_loop_origins) {
     test::Directory directory;

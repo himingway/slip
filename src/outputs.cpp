@@ -76,8 +76,9 @@ void write_outputs(const Result& result, const std::filesystem::path& directory)
     TemporaryDirectory lock{lock_path};
     const auto manifest_file = directory / ".slip-manifest";
     require_regular_or_missing(manifest_file);
+    const bool has_manifest = std::filesystem::is_regular_file(state(manifest_file));
     std::map<std::string, std::string> previous;
-    if (std::filesystem::is_regular_file(state(manifest_file))) {
+    if (has_manifest) {
         std::istringstream manifest(read_file(manifest_file));
         std::string line;
         if (!std::getline(manifest, line) || line != "slip-manifest 1")
@@ -142,8 +143,9 @@ void write_outputs(const Result& result, const std::filesystem::path& directory)
         if (std::filesystem::is_regular_file(state(file))) {
             const auto existing = read_file(file);
             if (existing == text) continue;
-            if (const auto old = previous.find(name); old != previous.end() && fingerprint(existing) != old->second)
-                throw Error({file.string()}, "E_OUTPUT_MODIFIED", "generated file was edited; move the edited file before rebuilding");
+            const auto old = previous.find(name);
+            if (name != ".slip-manifest" && (old == previous.end() || fingerprint(existing) != old->second))
+                throw Error({file.string()}, "E_OUTPUT_MODIFIED", "generated file was edited or already exists; move it before rebuilding");
         }
         changed.push_back(name);
     }

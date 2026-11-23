@@ -108,6 +108,7 @@ std::string Functions::text(const Value& value) {
     if (auto boolean = std::get_if<bool>(&value)) return *boolean ? "True" : "False";
     if (auto number = std::get_if<Integer>(&value)) return std::to_string(*number);
     if (auto string = std::get_if<std::string>(&value)) return *string;
+    if (auto captured = std::get_if<Captured>(&value)) return captured->text;
     return join_bounded(std::get<std::vector<std::string>>(value), ", ");
 }
 Integer Functions::integer(const Value& value) {
@@ -115,10 +116,17 @@ Integer Functions::integer(const Value& value) {
     if (auto number = std::get_if<Integer>(&value)) return *number;
     return numeric(text(value));
 }
+std::optional<Integer> try_numeric(std::string_view text) {
+    try { return numeric(text); } catch (const Error&) { return {}; }
+}
 bool Functions::truth(const Value& value) {
     if (auto boolean = std::get_if<bool>(&value)) return *boolean;
     if (auto number = std::get_if<Integer>(&value)) return *number != 0;
     if (auto string = std::get_if<std::string>(&value)) return !string->empty();
+    if (auto captured = std::get_if<Captured>(&value)) {
+        if (auto n = try_numeric(captured->text)) return *n != 0;
+        return !captured->text.empty();
+    }
     return !std::get<std::vector<std::string>>(value).empty();
 }
 
@@ -147,18 +155,33 @@ Functions::Value Functions::eval(const ExprPtr& expr, const std::map<std::string
             if (node.op == "&&" && !truth(a)) return false;
             if (node.op == "||" && truth(a)) return true;
             auto b = run(node.right);
-            if (node.op == "+" && (std::holds_alternative<std::string>(a) || std::holds_alternative<std::string>(b))) {
-                if (text(a).size() + text(b).size() > 1000000) throw Error(expr->loc, "E_LIMIT", "defun string size limit exceeded");
-                return text(a) + text(b);
+            auto is_text = [](const Value& v) { return std::holds_alternative<std::string>(v) || std::holds_alternative<Captured>(v); };
+            auto as_number = [](const Value& v) -> std::optional<Integer> {
+                if (auto boolean = std::get_if<bool>(&v)) return *boolean ? 1 : 0;
+                if (auto number = std::get_if<Integer>(&v)) return *number;
+                if (auto captured = std::get_if<Captured>(&v)) {
+                    try { return numeric(captured->text); } catch (const Error&) { return {}; }
+                }
+                return {};
+            };
+            if (node.op == "+") {
+                const bool has_string = std::holds_alternative<std::string>(a) || std::holds_alternative<std::string>(b);
+                const bool numeric_capture = !has_string && as_number(a) && as_number(b);
+                if (!numeric_capture && (is_text(a) || is_text(b))) {
+                    if (text(a).size() + text(b).size() > 1000000) throw Error(expr->loc, "E_LIMIT", "defun string size limit exceeded");
+                    return text(a) + text(b);
+                }
             }
             if (node.op == "==" || node.op == "===" || node.op == "!=" || node.op == "!==") {
-                const auto number = [](const Value& v) { return std::holds_alternative<Integer>(v) || std::holds_alternative<bool>(v); };
-                const bool equal = number(a) && number(b) ? integer(a) == integer(b) : a == b;
+                bool equal = false;
+                if (is_text(a) && is_text(b)) equal = text(a) == text(b);
+                else if (auto na = as_number(a), nb = as_number(b); na && nb) equal = *na == *nb;
+                else equal = a == b;
                 return node.op == "!=" || node.op == "!==" ? !equal : equal;
             }
             if (node.op == "&&") return truth(b);
             if (node.op == "||") return truth(b);
-            if (std::holds_alternative<std::string>(a) && std::holds_alternative<std::string>(b)) {
+            if (is_text(a) && is_text(b)) {
                 if (node.op == "<") return text(a) < text(b);
                 if (node.op == ">") return text(a) > text(b);
                 if (node.op == "<=") return text(a) <= text(b);
@@ -230,11 +253,7 @@ Functions::Value Functions::call(const std::string& name, const std::vector<Valu
     if (auto found = definitions.find(name); found != definitions.end()) {
         count(found->second.parameters.size());
         std::map<std::string, Value> env;
-        for (std::size_t i = 0; i < args.size(); ++i) {
-            auto value = args[i];
-            if (auto str = std::get_if<std::string>(&value)) { try { value = numeric(*str); } catch (const Error&) {} }
-            env.emplace(found->second.parameters[i], std::move(value));
-        }
+        for (std::size_t i = 0; i < args.size(); ++i) env.emplace(found->second.parameters[i], args[i]);
         return eval(found->second.result, env, depth + 1);
     }
     if (name == "str") { count(1); return text(args[0]); }
@@ -256,9 +275,14 @@ Functions::Value Functions::call(const std::string& name, const std::vector<Valu
     if (name == "concat") { count(2); auto result = text(args[0]); append_bounded(result, text(args[1])); return result; }
     if (name == "substr" || name == "bit_select") {
         count(3); auto source = text(args[0]); auto first = integer(args[1]), last = integer(args[2]);
-        if (name == "bit_select") { if (first < last || first < 0 || first >= static_cast<Integer>(source.size())) throw Error(loc, "E_FUNCTION", "bit_select out of range"); std::swap(first, last); ++last; }
-        else last = add(first, last);
-        auto start = slice_index(first, source.size()), end = slice_index(last, source.size());
+        if (name == "bit_select") {
+            if (first < last || last < 0 || first >= static_cast<Integer>(source.size())) throw Error(loc, "E_FUNCTION", "bit_select out of range");
+            std::swap(first, last); ++last;
+            auto start = slice_index(first, source.size()), end = slice_index(last, source.size());
+            return source.substr(start, end > start ? end - start : 0);
+        }
+        if (last <= 0) return std::string{};
+        auto start = slice_index(first, source.size()), end = slice_index(add(static_cast<Integer>(start), last), source.size());
         return source.substr(start, end > start ? end - start : 0);
     }
     if (name == "upper" || name == "lower" || name == "reverse" || name == "bit_reverse") { count(1); return method(name == "bit_reverse" ? "reverse" : name, args[0], {}, loc); }
@@ -267,7 +291,8 @@ Functions::Value Functions::call(const std::string& name, const std::vector<Valu
 }
 
 Functions::Value Functions::method(const std::string& name, const Value& object, const std::vector<Value>& args, Location loc) {
-    if (!std::holds_alternative<std::string>(object)) throw Error(loc, "E_FUNCTION", "string method requires a string");
+    if (!std::holds_alternative<std::string>(object) && !std::holds_alternative<Captured>(object))
+        throw Error(loc, "E_FUNCTION", "string method requires a string");
     auto value = text(object);
     auto count = [&](std::size_t low, std::size_t high) { if (args.size() < low || args.size() > high) throw Error(loc, "E_FUNCTION", "invalid arguments to ." + name); };
     if (name == "upper" || name == "lower" || name == "casefold" || name == "reverse" || name == "capitalize" || name == "title" || name == "swapcase") {
@@ -415,7 +440,7 @@ std::string Functions::replacement(std::string_view source, const std::vector<st
                     if (value[i] == ')') --parentheses;
                     if ((value[i] == ',' && parentheses == 1) || !parentheses) {
                         auto raw = trim(value.substr(arg_start, i - arg_start));
-                        if (!raw.empty() || !args.empty()) args.emplace_back(expand(raw, depth + 1));
+                        if (!raw.empty() || !args.empty() || value[i] == ',') args.emplace_back(Captured{expand(raw, depth + 1)});
                         arg_start = i + 1;
                     }
                     ++i;

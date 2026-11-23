@@ -157,11 +157,14 @@ const Interface* Backend::reflect(const std::string& name) {
             if (const auto syntax = declared->getTypeSyntax()) {
                 const auto text = trim(syntax->toString());
                 const auto first = text.substr(0, text.find_first_of(" [\t\n"));
-                static const std::set<std::string> builtins = {"logic", "bit", "reg", "wire", "int", "integer", "byte", "shortint", "longint", "time"};
+                static const std::set<std::string> builtins = {"logic", "bit", "reg", "wire", "int", "integer", "byte", "shortint", "longint", "time", "signed", "unsigned"};
                 info.typed = !first.empty() && !builtins.contains(first);
                 if (syntax->kind == slang::syntax::SyntaxKind::NamedType)
                     info.type = trim(syntax->as<slang::syntax::NamedTypeSyntax>().name->toString());
-                else if (info.typed) info.type = text;
+                else if (info.typed) {
+                    info.type = text;
+                    info.width.clear();
+                }
             }
             if (auto dims = declared->getDimensionSyntax()) for (auto dim : *dims) info.array += trim(dim->toString());
         }
@@ -235,8 +238,61 @@ std::int64_t Backend::constant(std::string_view expr, const Environment& environ
     while (exists(result_name)) result_name += '_';
     std::string evaluator = "__slip_eval";
     while (ip_names.contains(evaluator)) evaluator += '_';
+    auto scan_identifiers = [](std::string_view text, std::set<std::string>& out) {
+        for (std::size_t i = 0; i < text.size();) {
+            const auto start = i;
+            if (text[i] == '"') {
+                ++i;
+                while (i < text.size()) {
+                    if (text[i] == '\\' && i + 1 < text.size()) i += 2;
+                    else if (text[i++] == '"') break;
+                }
+                continue;
+            }
+            if (std::isdigit(static_cast<unsigned char>(text[i])) || text[i] == '\'') {
+                while (i < text.size() && (std::isdigit(static_cast<unsigned char>(text[i])) || text[i] == '_')) ++i;
+                if (i < text.size() && text[i] == '\'') {
+                    auto radix = i + 1;
+                    if (radix < text.size() && (text[radix] == 's' || text[radix] == 'S')) ++radix;
+                    if (radix < text.size() && std::string_view("bBoOdDhH").find(text[radix]) != std::string_view::npos) {
+                        i = radix + 1;
+                        while (i < text.size() && (std::isalnum(static_cast<unsigned char>(text[i])) || text[i] == '_' || text[i] == '?')) ++i;
+                    } else if (i + 1 < text.size() && std::string_view("01xXzZ").find(text[i + 1]) != std::string_view::npos) i += 2;
+                }
+                if (i == start) ++i;
+                continue;
+            }
+            if (text[i] == '$') {
+                ++i;
+                while (i < text.size() && (std::isalnum(static_cast<unsigned char>(text[i])) || text[i] == '_')) ++i;
+                continue;
+            }
+            if (std::isalpha(static_cast<unsigned char>(text[i])) || text[i] == '_') {
+                ++i;
+                while (i < text.size() && (std::isalnum(static_cast<unsigned char>(text[i])) || text[i] == '_')) ++i;
+                const bool scoped = (start > 0 && text[start - 1] == '.') ||
+                    (start >= 2 && text[start - 1] == ':' && text[start - 2] == ':');
+                if (!scoped) out.emplace(text.substr(start, i - start));
+            } else ++i;
+        }
+    };
+    std::set<std::string> needed;
+    scan_identifiers(expr, needed);
+    bool added = true;
+    while (added) {
+        added = false;
+        for (const auto& [name, value] : environment) {
+            if (!needed.contains(name)) continue;
+            const auto before = needed.size();
+            scan_identifiers(value.starts_with("type:") ? std::string_view(value).substr(5) : std::string_view(value), needed);
+            if (needed.size() != before) added = true;
+        }
+    }
     std::string source = "module " + evaluator + ";\n";
-    for (const auto& [name, value] : environment) source += "localparam " + std::string(value.starts_with("type:") ? "type " : "") + name + " = " + (value.starts_with("type:") ? value.substr(5) : value) + ";\n";
+    for (const auto& [name, value] : environment) {
+        if (!needed.contains(name)) continue;
+        source += "localparam " + std::string(value.starts_with("type:") ? "type " : "") + name + " = " + (value.starts_with("type:") ? value.substr(5) : value) + ";\n";
+    }
     source += "localparam " + result_name + " = " + std::string(expr) + ";\nendmodule";
     if (auto found = impl->constants.find(source); found != impl->constants.end()) return found->second;
     auto& manager = impl->source_manager;

@@ -5,14 +5,17 @@ oracle; matching its output does not replace independent behavior checks.
 
 ## Regression tests
 
-`tests/regression/` contains 81 individually named CTest cases:
+`tests/regression/` contains individually named CTest cases across seven suites:
 
 | File | Independent expectations |
 |---|---|
 | `frontend.cpp` | AST structure for precedence, associativity, selects, casts and malformed expressions |
 | `semantic.cpp` | Signed widths, parameter resolution, packed/unpacked select overlap, drivers and feedback |
 | `diagnostics.cpp` | Error codes, filenames, exact lines/columns, CRLF input and nested include context |
+| `lint.cpp` | Undriven signals, inferred latches, unused regex rules and unconnected output warnings |
+| `features.cpp` | Slices, arrays, structs, enums, functions, assertions, specialization and bundles |
 | `runtime.cpp` | Integer/resource bounds, string methods, include/filelist/IP errors, ownership and compilation isolation |
+| `project_workflow.cpp` | Output ownership, filelists, profiles, warning policies, waivers, interop and inspection |
 
 Runtime checks include valid and overflowing boundary arithmetic, division and
 remainder, recursion and string expansion, cumulative metaprogram work, source
@@ -36,7 +39,8 @@ cmake --build --preset thread-sanitize --parallel 2
 ctest --preset thread-sanitize -R concurrent_compilers
 ```
 
-With Verilator installed, the release/sanitize suite has 107 CTest entries.
+With Verilator installed, the release and sanitize suites run the full C++ API,
+CLI, project workflow, fixture, editor integration and behavior simulations.
 ASan/UBSan check address safety and undefined behavior; they do not detect data
 races. The ThreadSanitizer preset runs the concurrent compilation regression.
 In sandboxes where LeakSanitizer cannot inspect processes, use
@@ -67,21 +71,21 @@ ctest --preset coverage --parallel 2
 cmake --build --preset coverage --target coverage_report
 ```
 
-The coverage preset also runs deterministic mutation fuzzing (108 CTest entries
-with Verilator). `build/coverage/coverage/report.md` gives per-file and total line
+The coverage preset also runs deterministic mutation fuzzing. `build/coverage/coverage/report.md` gives per-file and total line
 and branch coverage; `summary.json` provides counts for automation. Compressed
-gcov JSON contains individual uncovered lines and branches. Only the six
+gcov JSON contains individual uncovered lines and branches. Only the ten
 production `src/*.cpp` files are counted. Headers, tests, standard library and
 slang are excluded. Lines are deduplicated across template instantiations;
 branch totals exclude gcov's exception-only arcs but include other
 compiler-generated arcs. These numbers measure executed code, not correctness
 or equivalence. No arbitrary percentage is treated as proof of completeness.
 
-The native-only measurement on 2026-10-12 with GCC 16.2 and all 108
-coverage-preset tests passing was **1,646/1,785 lines (92.21%)** and
-**4,146/6,048 branches (68.55%)**. The largest line-coverage gaps were
-`functions.cpp` (80.89%) and `main.cpp` (90.16%). This is a measurement, not a
-gate: compiler versions and generated branch arcs affect counts.
+The native-only measurement on 2026-11-24 with GCC 16 and all 190
+coverage-preset tests passing across the ten production `src/*.cpp` files was
+**3,645/3,878 lines (93.99%)** and **9,230/13,212 branches (69.86%)**. The
+largest line-coverage gaps were `functions.cpp` (84.36%) and `main.cpp`
+(88.03%). This is a measurement, not a gate: compiler versions and generated
+branch arcs affect counts.
 
 For a fresh measurement, remove previous `.gcda` files before running tests:
 

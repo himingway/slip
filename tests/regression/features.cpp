@@ -152,3 +152,36 @@ TEST_CASE(struct_array_index_feedback_is_detected) {
 TEST_CASE(struct_field_feedback_is_detected) {
     test::rejected("typedef struct packed { logic a; logic b; } packet_t; module m(y) { packet_t p; logic y; assign p.a=p.b; assign p.b=p.a; assign y=p.a; }", "E_COMB_LOOP");
 }
+TEST_CASE(meta_localparams_and_templates_propagate_through_specialization_functions_and_types) {
+    const auto result = slip::compile(R"(
+module leaf #(param N = 2) (y) {
+    logic [N-1:0] y;
+    `for (`i = 0; `i < N; `i++) { assign y[`i] = 1'b0; }
+}
+module typed_buf #(param type T = logic) (a, y) {
+    input T a; output T y;
+    assign y = a;
+}
+module top(a, y, z) {
+    logic [1:0] a, y;
+    logic [3:0] z;
+    `if (1) {
+        localparam K = 4;
+        leaf #(.N(K)) u_leaf { .y(z) };
+    }
+    `for (`i = 2; `i <= 2; `i++) {
+        function [`i-1:0] pass_`i(logic [`i-1:0] x) { return x; }
+        typed_buf #(.T(logic [`i - 1:0])) u_buf_`i { .a(pass_`i(a)), .y };
+    }
+}
+)");
+    test::contains(result.modules.at("top"), "function automatic logic [1:0] pass_2(input logic [1:0] x);");
+    test::contains(result.modules.at("top"), ".T(logic [1:0])");
+    bool expanded_four = false;
+    for (const auto& [name, sv] : result.modules)
+        if (name.starts_with("leaf__")) expanded_four |= sv.find("assign y[3] = 1'b0;") != std::string::npos;
+    CHECK(expanded_four);
+}
+TEST_CASE(non_port_master_or_slave_bundle_is_rejected) {
+    test::rejected(stream + "module m { master Stream tx; assign tx.data = 8'h00; assign tx.valid = 1'b0; }", "E_BUNDLE", "module ports");
+}

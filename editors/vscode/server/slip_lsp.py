@@ -353,7 +353,8 @@ class Server:
         self.executor.submit(self.diagnose, uri, document["version"], document["text"])
 
     def sources(self, uri: str) -> dict[str, str]:
-        path, _, key = self.context(uri)
+        path, config, key = self.context(uri)
+        cwd = config.parent if config else path.parent
         with self.state_lock:
             sources = {uri: self.documents[uri]["text"]}
             report = self.cache.get(key, {})
@@ -361,7 +362,7 @@ class Server:
         for module in report.get("modules", []):
             name = module.get("location", {}).get("file", "")
             if name and not name.startswith("<"):
-                pending.append(Path(name))
+                pending.append(cwd / name)
         visited = set()
         while pending and len(visited) < 256:
             current = pending.pop().resolve()
@@ -388,8 +389,11 @@ class Server:
     def completion(self, uri: str, position: dict) -> list[dict]:
         text = self.documents[uri]["text"]
         offset = offset_at(text, position)
-        if any(token.kind == "comment" and token.start <= offset <= token.end for token in scan(text)):
-            return []
+        for token in scan(text):
+            if token.kind == "comment":
+                closed_block = token.text.startswith("/*") and len(token.text) >= 4 and token.text.endswith("*/")
+                if token.start < offset and (offset < token.end if closed_block else offset <= token.end):
+                    return []
         target = instance_context(text, offset)
         _, config, key = self.context(uri)
         if target:
@@ -439,7 +443,8 @@ class Server:
         word = next((token.text for token in scan(text) if token.start <= offset <= token.end and token.kind == "name"), "")
         if not word:
             return []
-        _, _, key = self.context(uri)
+        path, config, key = self.context(uri)
+        cwd = config.parent if config else path.parent
         current_module = next((m["name"] for m in module_index(text) if m["start"] <= offset <= m["end"]), None)
         with self.state_lock:
             modules = self.cache.get(key, {}).get("modules", [])
@@ -448,7 +453,7 @@ class Server:
                 for signal in [*module.get("ports", []), *module.get("signals", [])]:
                     if signal["name"] == word:
                         loc = signal["location"]
-                        destination = uri if loc["file"].startswith("<") else Path(loc["file"]).resolve().as_uri()
+                        destination = uri if loc["file"].startswith("<") else (cwd / loc["file"]).resolve().as_uri()
                         source = self.sources(uri).get(destination, text)
                         lines = source.splitlines(keepends=True)
                         line = max(0, loc["line"] - 1)

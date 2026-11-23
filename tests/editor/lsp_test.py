@@ -141,6 +141,43 @@ leaf u { "p_(.*)" => "v_$rename(\\1)" };
         self.assertEqual(modules[0]['ports'], ['clk', 'y'])
         self.assertEqual(lsp.instance_context('module m { comb {', 17), None)
 
+    def test_completion_at_comment_boundaries_and_definition_cwd(self):
+        with tempfile.TemporaryDirectory(prefix='slip-editor-edge-') as temporary:
+            root = Path(temporary)
+            (root/'rtl').mkdir()
+            (root/'rtl/inc.slip').write_text('module leaf(a, y) { logic a, y; assign y = a; }\n')
+            top = root/'rtl/top.slip'
+            source = 'include "inc.slip";\nmodule m(a, y) {\n    logic a, y;\n    /* c */ leaf u { . // trailing\n}\n'
+            top.write_text(source)
+            proj = root/'proj'
+            (proj/'rtl').mkdir(parents=True)
+            (proj/'slip.conf').write_text('entry = rtl/design.slip\n')
+            design = proj/'rtl/design.slip'
+            design_source = 'module m(a, y) {\n    logic a, y;\n    assign y = a;\n}\n'
+            design.write_text(design_source)
+            client = Client()
+            try:
+                client.request('initialize')
+                uri = top.as_uri()
+                client.send('textDocument/didOpen', {'textDocument': {'uri': uri, 'text': source, 'version': 1}})
+                client.diagnostics(uri, 1)
+                dot_pos = lsp.position_at(source, source.index('. //') + 1)
+                items = client.request('textDocument/completion', {'textDocument': {'uri': uri}, 'position': dot_pos})
+                self.assertEqual({item['label'] for item in items}, {'a', 'y'})
+                after_block = lsp.position_at(source, source.index('/* c */') + 7)
+                outside = client.request('textDocument/completion', {'textDocument': {'uri': uri}, 'position': after_block})
+                self.assertTrue(len(outside) > 0)
+                design_uri = design.as_uri()
+                client.send('textDocument/didOpen', {'textDocument': {'uri': design_uri, 'text': design_source, 'version': 1}})
+                self.assertEqual(client.diagnostics(design_uri, 1), [])
+                ref_pos = lsp.position_at(design_source, design_source.index('= a') + 2)
+                defs = client.request('textDocument/definition', {'textDocument': {'uri': design_uri}, 'position': ref_pos})
+                self.assertEqual(len(defs), 1)
+                self.assertEqual(defs[0]['uri'], design_uri)
+                self.assertEqual(defs[0]['range']['start']['line'], 1)
+            finally:
+                client.close()
+
     def test_real_server_diagnostics_navigation_completion_and_formatting(self):
         with tempfile.TemporaryDirectory(prefix='slip-editor-') as temporary:
             path = Path(temporary)/'main.slip'

@@ -40,10 +40,26 @@ std::string substitute_name(std::string name, const Substitutions& values) {
     }
     return name;
 }
+std::string expand_template_name(std::string name, const Substitutions& values, const Location& loc) {
+    name = substitute_name(std::move(name), values);
+    if (name.find('`') != std::string::npos) throw Error(loc, "E_META", "unbound template identifier '" + name + "'");
+    return name;
+}
 ExprPtr substitute(const ExprPtr& expr, const Substitutions& values) {
     return rewrite(expr, [&](const Identifier& id, const Location& loc) {
-        if (auto found = values.find(id.name); found != values.end()) return found->second;
-        return expression(loc, Identifier{substitute_name(id.name, values), id.meta});
+        if (id.meta) {
+            if (auto found = values.find(id.name); found != values.end()) return found->second;
+            return expression(loc, id);
+        }
+        return expression(loc, Identifier{substitute_name(id.name, values), false});
+    }, [&](const ExprPtr& node) {
+        if (const auto* call = std::get_if<Call>(&node->node))
+            return expression(node->loc, Call{substitute_name(call->name, values), call->args});
+        if (const auto* method = std::get_if<Method>(&node->node))
+            return expression(node->loc, Method{method->object, substitute_name(method->name, values), method->args, method->field});
+        if (const auto* cast = std::get_if<Cast>(&node->node))
+            return expression(node->loc, Cast{substitute_name(cast->type, values), cast->value});
+        return node;
     });
 }
 void walk(const Body& body, const std::function<void(const Statement&)>& visitor) {
@@ -95,6 +111,14 @@ class Expander {
             if (id.meta) throw Error(loc, "E_META", "unbound metaprogram variable '" + id.name + "'");
             if (id.name.find('`') != std::string::npos) throw Error(loc, "E_META", "unbound template identifier '" + id.name + "'");
             return expression(loc, id);
+        }, [](const ExprPtr& node) {
+            auto check_name = [&](const std::string& name) {
+                if (name.find('`') != std::string::npos) throw Error(node->loc, "E_META", "unbound template identifier '" + name + "'");
+            };
+            if (const auto* call = std::get_if<Call>(&node->node)) check_name(call->name);
+            else if (const auto* method = std::get_if<Method>(&node->node)) check_name(method->name);
+            else if (const auto* cast = std::get_if<Cast>(&node->node)) check_name(cast->type);
+            return node;
         });
     }
     ExprPtr index(const ExprPtr& expr, const Substitutions& values) {
@@ -113,10 +137,81 @@ class Expander {
         if (auto select = std::get_if<Select>(&expr->node)) return expression(expr->loc, Select{hardware(select->base, values), index(select->first, values), index(select->last, values), select->slice, select->indexed});
         return sub(expr, values);
     }
+    SignalDecl expand_signal(const SignalDecl& node, const Substitutions& values, const Location& loc) {
+        ExprPtr width;
+        if (auto range = node.width ? std::get_if<Binary>(&node.width->node) : nullptr; range && range->op == ":")
+            width = expression(node.width->loc, Binary{":", index(range->left, values), index(range->right, values)});
+        else width = index(node.width, values);
+        auto decl = node;
+        decl.name = expand_template_name(node.name, values, loc);
+        decl.type = expand_template_name(node.type, values, loc);
+        decl.width = width;
+        decl.array_first = index(node.array_first, values);
+        decl.array_last = index(node.array_last, values);
+        for (auto& [first, last] : decl.dimensions) { first = index(first, values); last = index(last, values); }
+        return decl;
+    }
+    std::string fold_type_ranges(const std::string& raw, const std::string& expanded, const Location& loc) {
+        if (raw.find('`') == std::string::npos || expanded.find('[') == std::string::npos) return expanded;
+        std::string out;
+        for (std::size_t i = 0; i < expanded.size();) {
+            if (expanded[i] != '[') { out += expanded[i++]; continue; }
+            std::size_t depth = 0, start = i + 1, j = i;
+            while (j < expanded.size()) {
+                if (expanded[j] == '[') ++depth;
+                else if (expanded[j] == ']' && --depth == 0) break;
+                ++j;
+            }
+            if (j >= expanded.size()) { out.append(expanded, i, std::string::npos); break; }
+            std::string_view inside(expanded.data() + start, j - start);
+            std::size_t colon = std::string_view::npos;
+            unsigned paren = 0, bracket = 0, ternary = 0;
+            for (std::size_t k = 0; k < inside.size(); ++k) {
+                if (inside[k] == '(') ++paren;
+                else if (inside[k] == ')' && paren) --paren;
+                else if (inside[k] == '[') ++bracket;
+                else if (inside[k] == ']' && bracket) --bracket;
+                else if (inside[k] == '?' && !paren && !bracket) ++ternary;
+                else if (inside[k] == ':' && !paren && !bracket) {
+                    if (ternary) --ternary;
+                    else { colon = k; break; }
+                }
+            }
+            auto fold_part = [&](std::string_view part) -> std::string {
+                auto trimmed = trim(part);
+                if (trimmed.empty()) return trimmed;
+                try { return std::to_string(backend.constant(trimmed, {}, loc)); }
+                catch (const Error&) { return trimmed; }
+            };
+            out += '[';
+            if (colon != std::string_view::npos) out += fold_part(inside.substr(0, colon)) + ":" + fold_part(inside.substr(colon + 1));
+            else out += fold_part(inside);
+            out += ']';
+            i = j + 1;
+        }
+        return out;
+    }
+    void expand_parameter(NamedValue& parameter, const Substitutions& values, const Location& loc) {
+        if (parameter.is_type) {
+            if (const auto* literal = parameter.value ? std::get_if<Literal>(&parameter.value->node) : nullptr; literal && !literal->string) {
+                auto expanded = expand_template_name(literal->text, values, loc);
+                parameter.value = expression(parameter.value->loc, Literal{fold_type_ranges(literal->text, expanded, loc)});
+            } else parameter.value = hardware(parameter.value, values);
+        } else {
+            parameter.value = hardware(parameter.value, values);
+        }
+    }
 public:
     Expander(Backend& backend, const Options& options) : backend(backend), options(options) {}
     Body expand(const Body& body, Environment env, Substitutions values = {}) {
         Body result;
+        auto sync_env = [&](const Body& added) {
+            for (const auto& item : added) {
+                if (const auto* lp = std::get_if<LocalParam>(&item.node)) set_environment(env, lp->name, to_sv(lp->value));
+                else if (const auto* td = std::get_if<TypeDecl>(&item.node))
+                    for (const auto& [k, v] : td->constants) set_environment(env, k, to_sv(v));
+            }
+        };
         for (const auto& statement : body) {
             auto loc = statement.loc;
             if (!values.empty()) {
@@ -124,7 +219,10 @@ public:
                 for (const auto& [name, value] : values) bindings.push_back(name + "=" + to_sv(value));
                 loc.expansion = join(bindings, ", ");
             }
-            auto append = [&](Body added) { result.insert(result.end(), std::make_move_iterator(added.begin()), std::make_move_iterator(added.end())); };
+            auto append = [&](Body added) {
+                sync_env(added);
+                result.insert(result.end(), std::make_move_iterator(added.begin()), std::make_move_iterator(added.end()));
+            };
             if (auto conditional = std::get_if<If>(&statement.node); conditional && conditional->meta) {
                 auto condition = substitute(conditional->condition, values);
                 append(expand(evaluate_meta(condition, env, loc) ? conditional->yes : conditional->no, env, values));
@@ -148,53 +246,50 @@ public:
             }
             if (++statements > options.max_expanded_statements) throw Error(loc, "E_LIMIT", "expanded statement limit exceeded");
             auto expanded = std::visit(Overloaded{
-                [&](const SignalDecl& node) -> Statement {
-                    ExprPtr width;
-                    if (auto range = node.width ? std::get_if<Binary>(&node.width->node) : nullptr; range && range->op == ":") width = expression(node.width->loc, Binary{":", index(range->left, values), index(range->right, values)});
-                    else width = index(node.width, values);
-                    auto decl = node; decl.name = substitute_name(node.name, values); decl.width = width;
-                    decl.array_first = index(node.array_first, values); decl.array_last = index(node.array_last, values);
-                    for (auto& [first, last] : decl.dimensions) { first = index(first, values); last = index(last, values); }
-                    return {loc, std::move(decl)};
-                },
+                [&](const SignalDecl& node) -> Statement { return {loc, expand_signal(node, values, loc)}; },
                 [&](const LocalParam& node) -> Statement {
-                    auto name = substitute_name(node.name, values); auto value = hardware(node.value, values);
+                    auto name = expand_template_name(node.name, values, loc); auto value = hardware(node.value, values);
                     set_environment(env, name, to_sv(value)); return {loc, LocalParam{name, value}};
                 },
                 [&](const Assignment& node) -> Statement { return {loc, Assignment{hardware(node.target, values), hardware(node.value, values), node.nonblocking}}; },
-                [&](const Process& node) -> Statement { auto value = node; value.clock = substitute_name(node.clock, values); value.reset = substitute_name(node.reset, values); value.body = expand(node.body, env, values); return {loc, std::move(value)}; },
+                [&](const Process& node) -> Statement { auto value = node; value.clock = expand_template_name(node.clock, values, loc); value.reset = expand_template_name(node.reset, values, loc); value.body = expand(node.body, env, values); return {loc, std::move(value)}; },
                 [&](const If& node) -> Statement { return {loc, If{hardware(node.condition, values), expand(node.yes, env, values), expand(node.no, env, values), false}}; },
-                [&](const For& node) -> Statement { return {loc, For{substitute_name(node.variable, values), substitute_name(node.step_variable, values), hardware(node.init, values), hardware(node.condition, values), hardware(node.step, values), expand(node.body, env, values), false}}; },
+                [&](const For& node) -> Statement { return {loc, For{expand_template_name(node.variable, values, loc), expand_template_name(node.step_variable, values, loc), hardware(node.init, values), hardware(node.condition, values), hardware(node.step, values), expand(node.body, env, values), false}}; },
                 [&](const Case& node) -> Statement {
                     std::vector<CaseArm> arms;
                     for (auto& arm : node.arms) { std::vector<ExprPtr> patterns; for (auto& pattern : arm.patterns) patterns.push_back(hardware(pattern, values)); arms.push_back({std::move(patterns), expand(arm.body, env, values)}); }
                     return {loc, Case{node.kind, hardware(node.value, values), std::move(arms)}};
                 },
                 [&](const Instance& node) -> Statement {
-                    auto instance = node; instance.name = substitute_name(node.name, values);
-                    for (auto& param : instance.parameters) param.value = hardware(param.value, values);
-                    for (auto& connection : instance.connections) { connection.value = hardware(connection.value, values); connection.port = substitute_name(connection.port, values); connection.pattern = substitute_name(connection.pattern, values); connection.replacement = substitute_name(connection.replacement, values); }
+                    auto instance = node; instance.name = expand_template_name(node.name, values, loc);
+                    for (auto& param : instance.parameters) expand_parameter(param, values, loc);
+                    for (auto& connection : instance.connections) { connection.value = hardware(connection.value, values); connection.port = expand_template_name(connection.port, values, loc); connection.pattern = substitute_name(connection.pattern, values); connection.replacement = substitute_name(connection.replacement, values); }
                     return {loc, std::move(instance)};
                 },
                 [&](const Group& node) -> Statement { return {loc, Group{expand(node.body, env, values)}}; },
                 [&](const TypeDecl& node) -> Statement {
-                    auto value = node; value.name = substitute_name(value.name, values); value.sv = substitute_name(value.sv, values);
-                    for (auto& [name, expr] : value.constants) { name = substitute_name(name, values); expr = hardware(expr, values); set_environment(env, name, to_sv(expr)); }
+                    auto value = node; value.name = expand_template_name(value.name, values, loc); value.sv = expand_template_name(value.sv, values, loc);
+                    for (auto& [name, expr] : value.constants) { name = expand_template_name(name, values, loc); expr = hardware(expr, values); set_environment(env, name, to_sv(expr)); }
                     return {loc, std::move(value)};
                 },
                 [&](const Assertion& node) -> Statement { return {loc, Assertion{hardware(node.condition, values), node.message, node.compile_time}}; },
                 [&](const Return& node) -> Statement { return {loc, Return{hardware(node.value, values)}}; },
-                [&](const RTLFunction& node) -> Statement { auto value = node; auto inner = env;
+                [&](const RTLFunction& node) -> Statement {
+                    auto value = node;
+                    value.result = expand_signal(node.result, values, loc);
+                    for (auto& argument : value.arguments) argument = expand_signal(argument, values, loc);
+                    auto inner = env;
                     std::set<std::string> shadowed;
-                    for (const auto& argument : node.arguments) shadowed.insert(argument.name);
-                    walk(node.body, [&](const Statement& statement) { if (auto local = std::get_if<SignalDecl>(&statement.node)) shadowed.insert(local->name); });
+                    for (const auto& argument : value.arguments) shadowed.insert(argument.name);
+                    walk(node.body, [&](const Statement& statement) { if (auto local = std::get_if<SignalDecl>(&statement.node)) shadowed.insert(substitute_name(local->name, values)); });
                     std::erase_if(inner, [&](const auto& item) { return shadowed.contains(item.first); });
-                    value.body = expand(node.body, inner, values); return {loc, std::move(value)}; },
+                    value.body = expand(node.body, inner, values); return {loc, std::move(value)};
+                },
                 [&](const BundleUse& node) -> Statement {
-                    auto value = node; value.name = substitute_name(value.name, values);
-                    for (auto& parameter : value.parameters) parameter.value = hardware(parameter.value, values);
+                    auto value = node; value.name = expand_template_name(value.name, values, loc);
+                    for (auto& parameter : value.parameters) expand_parameter(parameter, values, loc);
                     for (auto& [first, last] : value.dimensions) { first = index(first, values); last = index(last, values); }
-                    for (auto& connection : value.connections) { connection.value = hardware(connection.value, values); connection.port = substitute_name(connection.port, values); }
+                    for (auto& connection : value.connections) { connection.value = hardware(connection.value, values); connection.port = expand_template_name(connection.port, values, loc); }
                     return {loc, std::move(value)};
                 }
             }, statement.node);
@@ -523,6 +618,7 @@ BundleExpansion expand_bundles(Module& module, const std::vector<BundleSchema>& 
         auto port = std::find_if(module.ports.begin(), module.ports.end(), [&](const auto& value) { return value.name == use->name; });
         const bool exported = port != module.ports.end();
         if (exported && use->role == "bus") throw Error(statement.loc, "E_BUNDLE", "bundle ports require master or slave role");
+        if (!exported && use->role != "bus") throw Error(statement.loc, "E_BUNDLE", "master/slave bundle '" + use->name + "' must be listed in module ports; use 'bus' for internal bundles");
         std::vector<PortDecl> ports;
         for (auto field : schema->fields) {
             if (std::find(result.groups[use->name].begin(), result.groups[use->name].end(), field.name) != result.groups[use->name].end())
@@ -583,7 +679,12 @@ void validate_function(const RTLFunction& function, const Environment& environme
     Body copy = function.body;
     map_body(copy, [&](const ExprPtr& value) { check(value); return value; });
     check(function.result.width);
-    for (const auto& argument : function.arguments) { check(argument.width); check(argument.array_first); check(argument.array_last); }
+    check(function.result.array_first); check(function.result.array_last);
+    for (const auto& [first, last] : function.result.dimensions) { check(first); check(last); }
+    for (const auto& argument : function.arguments) {
+        check(argument.width); check(argument.array_first); check(argument.array_last);
+        for (const auto& [first, last] : argument.dimensions) { check(first); check(last); }
+    }
 }
 
 std::vector<InterfacePort> instantiate(const Instance& instance, const Interface& interface, Backend& backend, Location loc);
@@ -731,6 +832,7 @@ Lowered lower(const Module& original, Backend& backend, const Options& options, 
     std::map<std::string, SignalDecl> declarations;
     std::map<std::string, Location> signal_locations, first_uses;
     std::map<std::string, ExprPtr> locals;
+    std::map<std::string, std::size_t> localparam_indices;
     std::set<std::string> reserved, loop_vars, driven;
     std::vector<std::string> used;
     for (const auto& [name, fields] : bundles.groups) { (void)fields; reserved.insert(name); }
@@ -759,7 +861,7 @@ Lowered lower(const Module& original, Backend& backend, const Options& options, 
         use_expansion = loc.expansion;
         std::visit(Overloaded{
             [&](const SignalDecl& node) { declare(node.name, loc); declarations.emplace(node.name, node); signal_locations.emplace(node.name, loc); use(node.width); use(node.array_first); use(node.array_last); for (auto& [first, last] : node.dimensions) { use(first); use(last); } },
-            [&](const LocalParam& node) { declare(node.name, loc); locals.emplace(node.name, node.value); result.ir.localparams.push_back({node.name, node.value}); result.ir.localparam_locations.push_back(loc); },
+            [&](const LocalParam& node) { declare(node.name, loc); locals.emplace(node.name, node.value); localparam_indices.emplace(node.name, result.ir.localparams.size()); result.ir.localparams.push_back({node.name, node.value}); result.ir.localparam_locations.push_back(loc); },
             [&](const Assignment& node) { use(node.target); use(node.value); for (auto& target : storage(node.target)) driven.insert(target.name); },
             [&](const Process& node) { if (!node.clock.empty()) use(parse_expression(node.clock, loc.file)); if (!node.reset.empty()) use(parse_expression(node.reset, loc.file)); },
             [&](const If& node) { use(node.condition); },
@@ -848,6 +950,7 @@ Lowered lower(const Module& original, Backend& backend, const Options& options, 
             result.ir.process_locations.push_back(statement.loc);
         } else if (std::holds_alternative<TypeDecl>(statement.node) || std::holds_alternative<RTLFunction>(statement.node)) {
             if (auto function = std::get_if<RTLFunction>(&statement.node)) validate_function(*function, result.environment, statement.loc);
+            if (std::holds_alternative<TypeDecl>(statement.node)) result.ir.header_order.emplace_back(true, result.ir.declarations.size());
             result.ir.declarations.push_back(statement);
         }
         else if (auto assertion = std::get_if<Assertion>(&statement.node)) {
@@ -859,7 +962,11 @@ Lowered lower(const Module& original, Backend& backend, const Options& options, 
             }
             result.ir.declarations.push_back(statement);
         } else if (auto instance = std::get_if<Instance>(&statement.node)) result.unresolved.emplace_back(statement.loc, *instance);
-        else if (!std::holds_alternative<SignalDecl>(statement.node) && !std::holds_alternative<LocalParam>(statement.node)) throw Error(statement.loc, "E_CONTEXT", "runtime if/for/case must be inside a comb, seq or initial block; for module-level expansion use `for with backtick variables or `if");
+        else if (const auto* local = std::get_if<LocalParam>(&statement.node)) {
+            if (auto found = localparam_indices.find(local->name); found != localparam_indices.end())
+                result.ir.header_order.emplace_back(false, found->second);
+        }
+        else if (!std::holds_alternative<SignalDecl>(statement.node)) throw Error(statement.loc, "E_CONTEXT", "runtime if/for/case must be inside a comb, seq or initial block; for module-level expansion use `for with backtick variables or `if");
     }
     detect_loops(module);
     return result;
@@ -1015,7 +1122,12 @@ void resolve_instances(Lowered& module, std::map<std::string, Interface>& interf
                 auto captures = rule.pattern.match(port.name);
                 if (!captures) continue;
                 auto candidate = functions.replacement(rule.replacement, *captures);
-                if (candidate != "_" && !std::regex_match(candidate, std::regex("[A-Za-z_][A-Za-z0-9_]*"))) throw Error(loc, "E_REGEX", "replacement must produce a valid signal name");
+                const bool valid_name = !candidate.empty() &&
+                    ((candidate[0] >= 'A' && candidate[0] <= 'Z') || (candidate[0] >= 'a' && candidate[0] <= 'z') || candidate[0] == '_') &&
+                    std::all_of(candidate.begin(), candidate.end(), [](unsigned char ch) {
+                        return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '_';
+                    });
+                if (candidate != "_" && !valid_name) throw Error(loc, "E_REGEX", "replacement must produce a valid signal name");
                 connections.emplace(port.name, expression(loc, Identifier{candidate})); order.push_back(port.name);
                 origins[port.name] = "regex: " + rule.source; ++rule.connections; matched = true; break;
             }
@@ -1112,7 +1224,7 @@ void resolve_instances(Lowered& module, std::map<std::string, Interface>& interf
                             signal.inferred_from = instance.module + "." + port.name;
                         }
                         if (signal.width.empty() && signal.infer_width && signal.type == "logic") { signal.width = port.width; signal.is_signed |= port.is_signed; if (!port.width.empty()) signal.inferred_from = instance.module + "." + port.name; }
-                        if (signal.array.empty()) signal.array = port.array;
+                        if (signal.array.empty() && signal.infer_width) signal.array = port.array;
                     }
                     if (!signal.direction.empty() && std::any_of(targets.begin(), targets.end(), [&](const auto& target) { return target.name == signal.name; })) {
                         if ((port.direction == "output" || port.direction == "inout") && signal.direction == "input" && signal.direction_explicit)
@@ -1349,14 +1461,44 @@ EmittedSource emit(const IRModule& module) {
         source = ")";
     }
     output.line(source + ";", module.loc);
-    for (const auto& declaration : module.declarations) if (auto type = std::get_if<TypeDecl>(&declaration.node)) output.line("    " + type->sv, declaration.loc);
-    if (typed_ports) for (const auto& port : module.ports) {
-        auto comment = signal_annotation(port); if (!comment.empty()) output.line("    // " + comment, port.loc);
-        output.line("    " + signal_decl(port) + ";", port.loc);
-    }
-    for (std::size_t i = 0; i < module.localparams.size(); ++i) {
-        const auto& parameter = module.localparams[i];
-        output.line("    localparam " + parameter.name + " = " + to_sv(parameter.value) + ";", module.localparam_locations.at(i));
+    if (module.header_order.empty()) {
+        for (const auto& declaration : module.declarations) if (auto type = std::get_if<TypeDecl>(&declaration.node)) output.line("    " + type->sv, declaration.loc);
+        if (typed_ports) for (const auto& port : module.ports) {
+            auto comment = signal_annotation(port); if (!comment.empty()) output.line("    // " + comment, port.loc);
+            output.line("    " + signal_decl(port) + ";", port.loc);
+        }
+        for (std::size_t i = 0; i < module.localparams.size(); ++i) {
+            const auto& parameter = module.localparams[i];
+            output.line("    localparam " + parameter.name + " = " + to_sv(parameter.value) + ";", module.localparam_locations.at(i));
+        }
+    } else {
+        std::set<std::size_t> emitted_types, emitted_locals;
+        auto emit_type = [&](std::size_t idx) {
+            if (emitted_types.insert(idx).second)
+                if (const auto* type = std::get_if<TypeDecl>(&module.declarations.at(idx).node))
+                    output.line("    " + type->sv, module.declarations.at(idx).loc);
+        };
+        auto emit_local = [&](std::size_t idx) {
+            if (emitted_locals.insert(idx).second) {
+                const auto& parameter = module.localparams.at(idx);
+                output.line("    localparam " + parameter.name + " = " + to_sv(parameter.value) + ";", module.localparam_locations.at(idx));
+            }
+        };
+        std::size_t split = 0;
+        for (std::size_t i = 0; i < module.header_order.size(); ++i)
+            if (module.header_order[i].first) split = i + 1;
+        for (std::size_t i = 0; i < split; ++i) {
+            const auto& [is_type, idx] = module.header_order[i];
+            if (is_type) emit_type(idx);
+            else emit_local(idx);
+        }
+        for (std::size_t i = 0; i < module.declarations.size(); ++i) emit_type(i);
+        if (typed_ports) for (const auto& port : module.ports) {
+            auto comment = signal_annotation(port); if (!comment.empty()) output.line("    // " + comment, port.loc);
+            output.line("    " + signal_decl(port) + ";", port.loc);
+        }
+        for (std::size_t i = split; i < module.header_order.size(); ++i) emit_local(module.header_order[i].second);
+        for (std::size_t i = 0; i < module.localparams.size(); ++i) emit_local(i);
     }
     for (auto& signal : module.signals) {
         if (signal.interface_field) continue;
@@ -1466,18 +1608,28 @@ class Specializer {
         auto& module = generated.at(name);
         module.frozen = frozen_parameters(module, backend);
         Environment env;
-        std::map<std::string, ExprPtr> definitions;
-        for (const auto& parameter : module.parameters) { env.emplace_back(parameter.name, constant_binding(parameter)); definitions[parameter.name] = parameter.value; }
-        walk(module.body, [&](const Statement& statement) {
-            if (auto local = std::get_if<LocalParam>(&statement.node)) definitions[local->name] = local->value;
-        });
+        for (const auto& parameter : module.parameters) env.emplace_back(parameter.name, constant_binding(parameter));
         std::function<void(const Body&)> collect = [&](const Body& body) { for (const auto& statement : body) {
-            if (auto type = std::get_if<TypeDecl>(&statement.node)) for (auto& [key, value] : type->constants) env.emplace_back(key, to_sv(value));
-            if (auto local = std::get_if<LocalParam>(&statement.node)) env.emplace_back(local->name, to_sv(local->value));
+            if (auto type = std::get_if<TypeDecl>(&statement.node)) for (auto& [key, value] : type->constants) set_environment(env, key, to_sv(value));
+            if (auto local = std::get_if<LocalParam>(&statement.node)) set_environment(env, local->name, to_sv(local->value));
             if (auto group = std::get_if<Group>(&statement.node)) collect(group->body);
         } }; collect(module.body);
         module.body = Expander(backend, options).expand(module.body, env);
-        rewrite_instances(module.body, module, env, definitions);
+        Environment post_env;
+        std::map<std::string, ExprPtr> definitions;
+        for (const auto& parameter : module.parameters) {
+            post_env.emplace_back(parameter.name, constant_binding(parameter));
+            definitions[parameter.name] = parameter.value;
+        }
+        std::function<void(const Body&)> collect_post = [&](const Body& body) { for (const auto& statement : body) {
+            if (auto type = std::get_if<TypeDecl>(&statement.node)) for (auto& [key, value] : type->constants) set_environment(post_env, key, to_sv(value));
+            if (auto local = std::get_if<LocalParam>(&statement.node)) {
+                set_environment(post_env, local->name, to_sv(local->value));
+                definitions[local->name] = local->value;
+            }
+            if (auto group = std::get_if<Group>(&statement.node)) collect_post(group->body);
+        } }; collect_post(module.body);
+        rewrite_instances(module.body, module, post_env, definitions);
         state[name] = 2; --depth;
     }
     void rewrite_instances(Body& body, Module& parent, const Environment& env, const std::map<std::string, ExprPtr>& definitions);

@@ -102,3 +102,23 @@ TEST_CASE(meta_identifier_roundtrips_through_to_sv_and_rejects_calls) {
 
     test::error([] { slip::parse_expression("`f(1)", "expr.slip"); }, "E_PARSE", "function call requires an identifier");
 }
+TEST_CASE(typedef_and_signal_arrays_parse_without_dropping_dimensions) {
+    const auto sv = test::module(R"(
+typedef logic [3:0] nib_t;
+typedef logic [7:0] arr4_t [0:3];
+module m(a, b, y, z) {
+    input arr4_t a;
+    output arr4_t y;
+    input nib_t [1:0] b;
+    output nib_t [1:0] z;
+    mem [0:3];
+    assign y = a;
+    assign mem[0] = b[0][0];
+    assign z = {b[1], b[0] ^ {3'b0, mem[0]}};
+}
+)", "m", true);
+    test::contains(sv, "typedef logic [7:0] arr4_t [0:3];");
+    test::contains(sv, "input nib_t [1:0] b;");
+    test::contains(sv, "logic mem [0:3];");
+    test::rejected("module m(a, j, y) { logic a, y; input int j; comb { for (int i = 0; i < 4; j++) { y = a; } } }", "E_PARSE", "step variable");
+}

@@ -163,3 +163,45 @@ TEST_CASE(inspection_distinguishes_omitted_and_intentionally_dangling_ports) {
     CHECK(connections[2].signal.empty());
     CHECK(connections[2].origin == "unconnected");
 }
+TEST_CASE(external_signed_implicit_ports_do_not_corrupt_type) {
+    test::Directory directory;
+    directory.write("ext.sv", "module ext(input signed [7:0] a, output unsigned [7:0] y); assign y = a; endmodule\n");
+    slip::Options options; options.ip_dirs = {directory.path()};
+    const auto result = slip::compile("module m(y) { ext u { .a(in_sig), .y }; }", "signed_ip.slip", options);
+    test::contains(result.modules.at("m"), "logic signed [7:0] in_sig;");
+    test::contains(result.modules.at("m"), "output logic [7:0] y");
+}
+TEST_CASE(explicit_scalar_declaration_is_not_mutated_into_array_by_instance_port) {
+    test::rejected(R"(
+module leaf(a, y) { logic [7:0] a [0:1]; logic [7:0] y; assign y = a[0]; }
+module m(y) { logic [7:0] x; logic [7:0] y; assign x[0] = 1'b1; leaf u { .a(x), .y }; }
+)", "E_SV");
+}
+TEST_CASE(localparam_preceding_module_typedef_preserves_declaration_order) {
+    const auto sv = test::module(R"(
+module m(a, y) {
+    localparam W = 8;
+    typedef logic [W-1:0] word_t;
+    input word_t a;
+    output word_t y;
+    localparam B = $bits(a);
+    static_assert(B == 8);
+    assign y = a;
+}
+)", "m", true);
+    CHECK(sv.find("localparam W = 8;") < sv.find("typedef logic [W - 1:0] word_t;"));
+    CHECK(sv.find("input word_t a;") < sv.find("localparam B = $bits(a);"));
+}
+TEST_CASE(package_scoped_constant_does_not_pull_unrelated_localparam) {
+    test::Directory directory;
+    directory.write("pkg.sv", "package p; localparam int N = 2; endpackage\n");
+    slip::Options options; options.ip_dirs = {directory.path()};
+    const auto result = slip::compile(R"(
+module m(a, y) {
+    logic [1:0] a, y;
+    localparam N = $bits(a);
+    `for (`i = 0; `i < p::N; `i++) { assign y[`i] = a[`i]; }
+}
+)", "pkg_const.slip", options);
+    test::contains(result.modules.at("m"), "assign y[1] = a[1];");
+}

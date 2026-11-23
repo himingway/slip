@@ -95,6 +95,13 @@ const waitFor = async predicate => {
         assert(!fs.existsSync(path.join(directory, 'build')));
         await extension.deactivate();
         assert.strictEqual(Object.keys(providers).length, 0);
+        // Deactivating while activate() is still starting must not leak the server or providers.
+        const earlyContext = { extensionPath: path.join(root, 'editors/vscode'), subscriptions: [] };
+        const activating = extension.activate(earlyContext);
+        await extension.deactivate();
+        await activating;
+        for (const disposable of earlyContext.subscriptions) disposable.dispose();
+        assert.strictEqual(Object.keys(providers).length, 0);
         console.log('VS Code adapter: real server diagnostics, completion, navigation, hover, symbols and formatting passed');
     } finally {
         await extension.deactivate();

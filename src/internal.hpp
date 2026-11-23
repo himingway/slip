@@ -66,7 +66,8 @@ public:
     explicit Functions(const std::vector<Function>& definitions);
     std::string replacement(std::string_view text, const std::vector<std::string>& captures);
 private:
-    using Value = std::variant<std::int64_t, std::string, std::vector<std::string>, bool>;
+    struct Captured { std::string text; auto operator<=>(const Captured&) const = default; };
+    using Value = std::variant<std::int64_t, std::string, Captured, std::vector<std::string>, bool>;
     std::map<std::string, Function> definitions;
     Value eval(const ExprPtr& expr, const std::map<std::string, Value>& environment, unsigned depth);
     Value call(const std::string& name, const std::vector<Value>& args, unsigned depth, Location loc);
